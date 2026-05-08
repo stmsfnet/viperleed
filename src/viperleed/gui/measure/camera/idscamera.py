@@ -404,7 +404,7 @@ class IDS(CameraABC):
         gain_max = self.remote_node_map.FindNode("Gain").Maximum()
         return gain_min , gain_max
     
-    
+
     def get_mode(self):
         """Return the mode set in the camera.
 
@@ -428,7 +428,7 @@ class IDS(CameraABC):
         if self.mode == "triggered":
             self.remote_node_map.FindNode("AcquisitionMode").CurrentEntry().SymbolicValue() == "SingleFrame"
         else:
-            self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("Continuous")
+            self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("Continuous") 
 
     def get_n_frames(self):
         """Return zero as the camera does not support frame averaging."""
