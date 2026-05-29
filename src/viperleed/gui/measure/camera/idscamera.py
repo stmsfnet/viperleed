@@ -5,6 +5,7 @@ import ids_peak_ipl.ids_peak_ipl as ids_ipl
 from PIL import Image
 import numpy as np
 import inspect
+from PyQt5 import QtCore as qtc
 
 from viperleed.gui.measure.camera.abc import CameraABC
 from viperleed.gui.measure.classes.abc import SettingsInfo
@@ -502,7 +503,7 @@ class IDS(CameraABC):
         pyqtSignal, emitted as soon as a frame has been acquired.
 
         Parameters
-        ----------
+        ----------  
         on_frame_ready : callable
             The function that will be called by the camera each time
             a new frame arrives. The callback should only care of
@@ -520,49 +521,56 @@ class IDS(CameraABC):
         """
         return 
 
+
+    @qtc.pyqtSlot()
+    @qtc.pyqtSlot(object)
     def start(self, *_):
         """Start the camera in self.mode
         Returns
         -------
         None.
-        """
-        super().start()
+        """        
+        #super().start() according to ~/camera/abc.py super().start() must be reimplemented
+        
+        if self.mode == "triggered":
+            self.n_frames_done = 0
 
-        self.n_frames_done = 0
+            self.alloc_buffer()
 
-        self.alloc_buffer()
 
         self.datastream.StartAcquisition()
 
-        #Lock writable nodes, which could influence the payload size or
-        #similar information during acquisition.
+        #Lock writable nodes, which could influence the payload size during acquisition.
         #self.remote_node_map.FindNode("TLParamsLocked").SetValue(1)
         self.remote_node_map.FindNode("AcquisitionStart").Execute()
         #Check if the command has finished before you continue (optional)
-        self.remote_node_map.FindNode("AcquisitionStart").WaitUntilDone()
-
-        self.remote_node_map.FindNode("TriggerSelector").SetCurrentEntry("ExposureStart")
-        self.remote_node_map.FindNode("TriggerMode").SetCurrentEntry("On")
-        self.remote_node_map.FindNode("TriggerSource").SetCurrentEntry("Software")
-       
+        self.remote_node_map.FindNode("AcquisitionStart").WaitUntilDone()   
         #self.started.emit() #The reimplementation must self.started.emit() after the driver has been appropriately started. -> ids cameras don't use the driver
+        
+        self.init_software_trigger()
+
+
 
     def stop(self):
         """Stop the camera."""
         if not super().stop():
             # No need to stop, or cannot stop yet
             return False
-               
-        #stop acquisition on camera
-        self.remote_node_map.FindNode("AcquisitionStop").Execute()
+        
+        try:      
+            #stop acquisition on camera
+            self.remote_node_map.FindNode("AcquisitionStop").Execute()
 
-        #stop and flush the datastream
-        if self.datastream.IsGrabbing():
-            self.datastream.StopAcquisition(ids_peak.AcquisitionStopMode_Kill)
+            #stop and flush the datastream
+            if self.datastream.IsGrabbing():
+                self.datastream.StopAcquisition(ids_peak.AcquisitionStopMode_Kill)
 
-        #revoke all buffers ( Discard all buffers from the acquisition engine, because they remain in the announced buffer pool.)
-        self.revoke_buffer()
+            #revoke all buffers ( Discard all buffers from the acquisition engine, because they remain in the announced buffer pool.)
+            self.revoke_buffer()
+        except Exception:
+            pass
 
+        self.stopped.emit()
         return True
     
     def trigger_now(self):
@@ -592,6 +600,15 @@ class IDS(CameraABC):
         except Exception:
             return False
 
+    def init_software_trigger(self):
+        """Initialize the software Trigger.
+        Sets the TriggerSelector to ExposureStart, the TriggerMode to On and the TriggerSource to Software.
+        """
+        self.remote_node_map.FindNode("TriggerSelector").SetCurrentEntry("ExposureStart")
+        self.remote_node_map.FindNode("TriggerMode").SetCurrentEntry("On")
+        self.remote_node_map.FindNode("TriggerSource").SetCurrentEntry("Software")
+
+    
     def _process_frame(self, buffer):
         """Convert buffer to numpy array and emit frame_ready signal.
 
