@@ -157,10 +157,10 @@ class IDS(CameraABC):
         if self.device is None or self.datastream is None:
             return False
 
-        #SensorState according to: https://www.1stvision.com/cameras/IDS/IDS-manuals/en/sensor-state.html        
+        #SensorState according to: https://www.1stvision.com/cameras/IDS/IDS-manuals/en/sensor-state.html  -> only available uEye+: GV and U3 cameras     
         #sensor_state = self.remote_node_map.FindNode("SensorState").CurrentEntry().SymbolicValue()
 
-        return self.datastream.NodeMaps()[0].FindNode("StreamIsGrabbing").Value() #this should be the correct line
+        return self.datastream.NodeMaps()[0].FindNode("StreamIsGrabbing").Value() 
 
     @property
     def supports_trigger_burst(self):
@@ -534,21 +534,10 @@ class IDS(CameraABC):
         
         if self.mode == "triggered":
             self.n_frames_done = 0
-
+            self.init_software_trigger()
             self.alloc_buffer()
-
-
-        self.datastream.StartAcquisition()
-
-        #Lock writable nodes, which could influence the payload size during acquisition.
-        #self.remote_node_map.FindNode("TLParamsLocked").SetValue(1)
-        self.remote_node_map.FindNode("AcquisitionStart").Execute()
-        #Check if the command has finished before you continue (optional)
-        self.remote_node_map.FindNode("AcquisitionStart").WaitUntilDone()   
-        #self.started.emit() #The reimplementation must self.started.emit() after the driver has been appropriately started. -> ids cameras don't use the driver
         
-        self.init_software_trigger()
-
+        self.started.emit()
 
 
     def stop(self):
@@ -590,6 +579,14 @@ class IDS(CameraABC):
         if not super().trigger_now():
             return False
         try:
+            self.datastream.StartAcquisition()
+
+            #Lock writable nodes, which could influence the payload size during acquisition.
+            self.remote_node_map.FindNode("TLParamsLocked").SetValue(1)
+            self.remote_node_map.FindNode("AcquisitionStart").Execute()
+            #Check if the command has finished before you continue (optional)
+            self.remote_node_map.FindNode("AcquisitionStart").WaitUntilDone()
+
             #image trigger
             self.remote_node_map.FindNode("TriggerSoftware").Execute()
             self.remote_node_map.FindNode("TriggerSoftware").WaitUntilDone()
