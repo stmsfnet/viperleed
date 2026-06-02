@@ -18,10 +18,7 @@ class IDS(CameraABC):
     #_mandatory_settings = (*CameraABC._mandatory_settings,)
     
     def __init__(self):
-        """Initialize instance.
-        
-        
-        """
+        """Initialize instance."""
         #self.hardware_supported_features.extend(['roi', 'black_level', 'color_format']) #TODO: IDS camera hardware support roi, black_level and color_format (get_[name] and set_[name] methods need to be implemented)
         
         
@@ -345,6 +342,7 @@ class IDS(CameraABC):
             return binning_vertical
         else:
             self.remote_node_map.FindNode("BinningVertical").SetValue(binning_horizontal)
+            return binning_horizontal
             
 
     def get_exposure(self):
@@ -427,7 +425,7 @@ class IDS(CameraABC):
     def set_mode(self):
         """Set the camera mode""" 
         if self.mode == "triggered":
-            self.remote_node_map.FindNode("AcquisitionMode").CurrentEntry().SymbolicValue() == "SingleFrame"
+            self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("SingleFrame")
         else:
             self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("Continuous") 
 
@@ -490,8 +488,7 @@ class IDS(CameraABC):
     def reset(self):
         """Reset the camera to FACTORY default settings."""
         self.remote_node_map.FindNode("ResetToFactoryDefaults").Execute()
-        #Check if the command has finished
-        #self.remote_node_map.FindNode("ResetToFactoryDefaults").WaitUntilDone()
+        self.remote_node_map.FindNode("ResetToFactoryDefaults").WaitUntilDone()
 
     def set_callback(self, on_frame_ready): #TODO: 
         """Pass a frame-ready callback to the camera driver.
@@ -556,6 +553,7 @@ class IDS(CameraABC):
 
             #revoke all buffers ( Discard all buffers from the acquisition engine, because they remain in the announced buffer pool.)
             self.revoke_buffer()
+
         except Exception:
             pass
 
@@ -579,6 +577,7 @@ class IDS(CameraABC):
         if not super().trigger_now():
             return False
         try:
+            self.busy = True
             self.datastream.StartAcquisition()
 
             #Lock writable nodes, which could influence the payload size during acquisition.
@@ -591,8 +590,20 @@ class IDS(CameraABC):
             self.remote_node_map.FindNode("TriggerSoftware").Execute()
             self.remote_node_map.FindNode("TriggerSoftware").WaitUntilDone()
 
-            buffer = self.datastream.WaitForFinishedBuffer(500)
+            buffer = self.datastream.WaitForFinishedBuffer(5000) #5000ms timeout is used in ids cameras example code
+
+            #Unlock writable nodes, which could influence the payload size during acquisition.
+            self.remote_node_map.FindNode("TLParamsLocked").SetValue(0)
+
+            self.remote_node_map.FindNode("AcquisitionStop").Execute()
+            #Check if the command has finished before you continue (optional)
+            self.remote_node_map.FindNode("AcquisitionStop").WaitUntilDone()
+
+            if self.datastream.IsGrabbing():
+                self.datastream.StopAcquisition(ids_peak.AcquisitionStopMode_Kill)
+
             self._process_frame(buffer)
+            self.busy = False
             return True
         except Exception:
             return False
