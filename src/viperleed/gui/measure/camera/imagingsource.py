@@ -108,7 +108,7 @@ def on_frame_ready_(__grabber_handle, image_start_pixel,
             camera.is_finding_best_frame_rate = False
             camera.busy = False
             # TODO: report that frames were lost, i.e., exposure
-            # time can be made longer.__
+            # time can be made longer.
         return
 
     # Don't emit frame_ready if we got more frames than expected
