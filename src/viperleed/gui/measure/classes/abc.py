@@ -95,7 +95,7 @@ class QObjectSettingsErrors(base.ViPErLEEDErrorEnum):
 
 
 class QObjectWithError(qtc.QObject):                                            # TODO: The Measure class was meant to inherit from this class. Due to double inheritance from QObject this is not possible through standard inheritance.
-    """Base class of mebelowasurement objects with error detection."""
+    """Base class of measurement objects with error detection."""
 
     # Emitted whenever an error has been detected. Contains
     # information about the error in the form (code, message).
