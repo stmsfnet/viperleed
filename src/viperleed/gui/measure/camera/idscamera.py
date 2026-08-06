@@ -20,8 +20,7 @@ class IDS(CameraABC):
     def __init__(self):
         """Initialize instance."""
         #self.hardware_supported_features.extend(['roi', 'black_level', 'color_format']) #TODO: IDS camera hardware support roi, black_level and color_format (get_[name] and set_[name] methods need to be implemented)
-        
-        
+          
         #initialize the ids_peak library
         ids_peak.Library.Initialize()            
 
@@ -29,6 +28,8 @@ class IDS(CameraABC):
         self.datastream = None
         self.remote_node_map = None
         self.has_zero_minimum = False
+
+        self.__has_callback = None
 
         #initialize device_manager used in list_devices() and open()
         self.device_manager = ids_peak.DeviceManager.Instance()
@@ -56,8 +57,10 @@ class IDS(CameraABC):
             Extra time in milliseconds required by the camera
             to complete a triggering cycle.
         """
-        #https://www.1stvision.com/cameras/IDS/IDS-manuals/en/operate-software-trigger.html
-        return 1 / self.get_frame_rate() *10**6
+        #https://www.1stvision.com/cameras/IDS/IDS-manuals/en/operate-software-trigger.html 
+        frame_rate = self.get_frame_rate()
+        return (1000 / frame_rate) if frame_rate > 0 else 0
+        #return 1 / self.get_frame_rate() *10**6
 
     @property
     def image_info(self):
@@ -153,11 +156,16 @@ class IDS(CameraABC):
         """ 
         if self.device is None or self.datastream is None:
             return False
-
+        
         #SensorState according to: https://www.1stvision.com/cameras/IDS/IDS-manuals/en/sensor-state.html  -> only available uEye+: GV and U3 cameras     
         #sensor_state = self.remote_node_map.FindNode("SensorState").CurrentEntry().SymbolicValue()
+        
+        try:
+            return self.datastream.NodeMaps()[0].FindNode("StreamIsGrabbing").Value() 
+        except Exception:
+            return False
 
-        return self.datastream.NodeMaps()[0].FindNode("StreamIsGrabbing").Value() 
+
 
     @property
     def supports_trigger_burst(self):
@@ -337,7 +345,7 @@ class IDS(CameraABC):
 
         binning_vertical = self.remote_node_map.FindNode("BinningVertical").Value()
         binning_horizontal = self.remote_node_map.FindNode("BinningHorizontal").Value()
-
+        
         if binning_vertical == binning_horizontal:
             return binning_vertical
         else:
@@ -363,8 +371,9 @@ class IDS(CameraABC):
         min_exposure, max_exposure : float
             Shortest and longest exposure times in milliseconds
         """
-        #ids cameras use microseconds        
-        return self.remote_node_map.FindNode("ExposureTime").Minimum() / 1000, self.remote_node_map.FindNode("ExposureTime").Maximum() / 1000
+        #ids cameras use microseconds 
+        exposure_time = self.remote_node_map.FindNode("ExposureTime")       
+        return exposure_time.Minimum() / 1000, exposure_time.Maximum() / 1000
 
     def get_frame_rate(self):
         """Return the number of frames delivered per second
@@ -493,8 +502,6 @@ class IDS(CameraABC):
     def set_callback(self, on_frame_ready): #TODO: 
         """Pass a frame-ready callback to the camera driver.
 
-        If self._process_frame() works correctly this method should be unnecessary
-
         If the camera does not support having a callback function,
         a similar behavior can be obtained using an appropriate
         pyqtSignal, emitted as soon as a frame has been acquired.
@@ -518,7 +525,6 @@ class IDS(CameraABC):
         """
         return 
 
-
     @qtc.pyqtSlot()
     @qtc.pyqtSlot(object)
     def start(self, *_):
@@ -527,8 +533,7 @@ class IDS(CameraABC):
         -------
         None.
         """        
-        #super().start() according to ~/camera/abc.py super().start() must be reimplemented
-        
+        super().start()
         if self.mode == "triggered":
             self.n_frames_done = 0
             self.init_software_trigger()
@@ -536,7 +541,7 @@ class IDS(CameraABC):
         
         self.started.emit()
 
-
+    @qtc.pyqtSlot()
     def stop(self):
         """Stop the camera."""
         if not super().stop():
@@ -592,21 +597,49 @@ class IDS(CameraABC):
 
             buffer = self.datastream.WaitForFinishedBuffer(5000) #5000ms timeout is used in ids cameras example code
 
-            #Unlock writable nodes, which could influence the payload size during acquisition.
-            self.remote_node_map.FindNode("TLParamsLocked").SetValue(0)
+            if buffer.HasImage():
+                captured_image = self._buff_to_numpy(buffer)
+                self.frame_ready.emit(captured_image)
+        except:
+            pass
+        finally:
+            if buffer is not None:
+                try:
+                    self.datastream.QueueBuffer(buffer)
+                except:
+                    pass
+            try:
+                #Unlock writable nodes, which could influence the payload size during acquisition.
+                self.remote_node_map.FindNode("TLParamsLocked").SetValue(0)
 
-            self.remote_node_map.FindNode("AcquisitionStop").Execute()
-            #Check if the command has finished before you continue (optional)
-            self.remote_node_map.FindNode("AcquisitionStop").WaitUntilDone()
+                self.remote_node_map.FindNode("AcquisitionStop").Execute()
+                #Check if the command has finished before you continue (optional)
+                self.remote_node_map.FindNode("AcquisitionStop").WaitUntilDone()
 
-            if self.datastream.IsGrabbing():
-                self.datastream.StopAcquisition(ids_peak.AcquisitionStopMode_Kill)
-
-            self._process_frame(buffer)
+                if self.datastream.IsGrabbing():
+                    self.datastream.StopAcquisition(ids_peak.AcquisitionStopMode_Kill)
+            except:
+                return False
             self.busy = False
             return True
+
+
+    def _buff_to_numpy(self, buffer): 
+        """Convert buffer to numpy array and emit frame_ready signal.
+
+        Parameter
+        ------
+        buffer: The buffer containing the acquired frame
+
+        Emits image.copy()
+        """
+        try:
+            raw_image = ids_ipl_extension.BufferToImage(buffer)
+            #image = Image.fromarray(raw_image)
+            return raw_image.get_numpy_2D_16().byteswap(True)
         except Exception:
-            return False
+            return None  
+
 
     def init_software_trigger(self):
         """Initialize the software Trigger.
@@ -616,23 +649,6 @@ class IDS(CameraABC):
         self.remote_node_map.FindNode("TriggerMode").SetCurrentEntry("On")
         self.remote_node_map.FindNode("TriggerSource").SetCurrentEntry("Software")
 
-    
-    def _process_frame(self, buffer):
-        """Convert buffer to numpy array and emit frame_ready signal.
-
-        Parameter
-        ------
-        buffer: The buffer containing the acquired frame
-
-        Emits image.copy()
-        """
-        raw_image = ids_ipl_extension.BufferToImage(buffer)
-        picture = raw_image.get_numpy_2D_16().byteswap(True)
-        self.datastream.QueueBuffer(buffer)
-        image = Image.fromarray(picture)
-
-        self.frame_ready.emit(image.copy())
-        
     def alloc_buffer(self):
         """Allocates the buffer, needed for start()"""
         if self.device is None:
