@@ -11,6 +11,36 @@ from viperleed.gui.measure.camera.abc import CameraABC
 from viperleed.gui.measure.classes.abc import SettingsInfo
 from viperleed.gui.measure import hardwarebase as base
 
+class LiveWorker(qtc.QObject):
+    """Worker thread for live mode."""
+    frame_ready = qtc.pyqtSignal(np.ndarray)
+
+    def __init__(self, device, datastream):
+        super().__init__()
+        self.device = device
+        self.datastream = datastream
+        self._running = False
+
+    @qtc.pyqtSlot()
+    def run(self):
+        """Runs the while loop for camera buffers."""
+        self._running = True
+        
+        while self._running:
+            try:
+                buffer = self.datastream.WaitForFinishedBuffer(500)
+                if buffer.HasImage():
+                    image_np = self.device._buff_to_numpy(buffer)
+                    if image_np is not None:
+                        self.frame_ready.emit(image_np)    
+            except:
+                continue
+            finally:
+                self.datastream.QueueBuffer(buffer)
+
+    def stop(self):
+        """Stops the while loop."""
+        self._running = False
 
 class IDS(CameraABC):
     """Concrete subclass of CameraABC handling IDS_peak Cameras."""
@@ -30,6 +60,9 @@ class IDS(CameraABC):
         self.has_zero_minimum = False
 
         self.__has_callback = None
+        self._live_thread = None
+        self._live_worker = None
+        self._live_thread = qtc.QThread()
 
         #initialize device_manager used in list_devices() and open()
         self.device_manager = ids_peak.DeviceManager.Instance()
@@ -436,6 +469,7 @@ class IDS(CameraABC):
         if self.mode == "triggered":
             self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("SingleFrame")
         else:
+            self.remote_node_map.FindNode("TriggerMode").SetCurrentEntry("Off")
             self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("Continuous") 
 
     def get_n_frames(self):
@@ -523,7 +557,14 @@ class IDS(CameraABC):
         -------
         None
         """
-        return 
+        if self.__has_callback is not None:
+            try:
+                self.frame_ready.disconnect(self.__has_callback)
+            except Exception:
+                pass
+        self.__has_callback = on_frame_ready
+        if callable(on_frame_ready):
+            self.frame_ready.connect(on_frame_ready)
 
     @qtc.pyqtSlot()
     @qtc.pyqtSlot(object)
@@ -534,10 +575,26 @@ class IDS(CameraABC):
         None.
         """        
         super().start()
-        if self.mode == "triggered":
+        self.alloc_buffer()
+
+        if self.mode == "live":
+            self.remote_node_map.FindNode("TLParamsLocked").SetValue(1)
+            self.datastream.StartAcquisition()
+            self.remote_node_map.FindNode("AcquisitionStart").Execute()
+
+            
+            self._live_worker = LiveWorker(self.device, self.datastream)
+            self._live_worker.moveToThread(self._live_thread)
+            self._live_thread.started.connect(self._live_worker.run)
+            self._live_worker.frame_ready.connect(self.frame_ready.emit)
+            
+            self._live_thread.start()
+
+        elif self.mode == "triggered":
+
             self.n_frames_done = 0
             self.init_software_trigger()
-            self.alloc_buffer()
+            
         
         self.started.emit()
 
@@ -548,7 +605,16 @@ class IDS(CameraABC):
             # No need to stop, or cannot stop yet
             return False
         
-        try:      
+        try:
+            #stop thread
+            if self._live_worker is not None:
+                self._live_worker.stop()
+            if self._live_thread is not None:
+                self._live_thread.quit()
+                self._live_thread.wait()
+                self._live_thread = None
+                self._live_worker = None
+
             #stop acquisition on camera
             self.remote_node_map.FindNode("AcquisitionStop").Execute()
 
@@ -606,7 +672,7 @@ class IDS(CameraABC):
             if buffer is not None:
                 try:
                     self.datastream.QueueBuffer(buffer)
-                except:
+                except Exception:
                     pass
             try:
                 #Unlock writable nodes, which could influence the payload size during acquisition.
@@ -618,7 +684,7 @@ class IDS(CameraABC):
 
                 if self.datastream.IsGrabbing():
                     self.datastream.StopAcquisition(ids_peak.AcquisitionStopMode_Kill)
-            except:
+            except Exception:
                 return False
             self.busy = False
             return True
