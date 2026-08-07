@@ -47,13 +47,13 @@ class IDS(CameraABC):
 
     #_mandatory_settings = (*CameraABC._mandatory_settings,)
     
-    def __init__(self):
+    def __init__(self, *args, settings=None, parent=None, **kwargs):
         """Initialize instance."""
         #self.hardware_supported_features.extend(['roi', 'black_level', 'color_format']) #TODO: IDS camera hardware support roi, black_level and color_format (get_[name] and set_[name] methods need to be implemented)
           
         #initialize the ids_peak library
         ids_peak.Library.Initialize()            
-
+        
         self.device = None
         self.datastream = None
         self.remote_node_map = None
@@ -62,11 +62,14 @@ class IDS(CameraABC):
         self.__has_callback = None
         self._live_thread = None
         self._live_worker = None
-        self._live_thread = qtc.QThread()
+        self._live_thread = qtc.QThread()     
 
         #initialize device_manager used in list_devices() and open()
+        
         self.device_manager = ids_peak.DeviceManager.Instance()
+        super().__init__(ids_peak,*args,settings=settings, parent=parent, **kwargs)
 
+        
     @property
     def exceptions(self):
         """Return a tuple of camera exceptions.
@@ -339,20 +342,20 @@ class IDS(CameraABC):
         """
         #self.name to check if this works
         #self.name = "IDS UI326xCP-M (IDS/UI326xCP-M/4103712875-0)"
-        
+
         try:
-            self.device_manager.Update()
+            # self.device_manager.Update()
             #count is needed to open ANY ids camera and not just the first openable camera
             count = 0 
             for name in self.device_manager.Devices():
-                print(name.DisplayName())
+                print("trying opening camera")
                 if name.DisplayName() == self.name:
-                     
+                    print("camera open")
                     self.device = self.device_manager.Devices()[count].OpenDevice(ids_peak.DeviceAccessType_Control)
-                    print(name.DisplayName())
 
                     self.remote_node_map = self.device.RemoteDevice().NodeMaps()[0]
-                    self.datastream = self.device.DataStreams()[0].OpenDataStream() 
+                    self.datastream = self.device.DataStreams()[0].OpenDataStream()
+                    print("camera opened")
 
                     #set the pixelformat for used ids cameras to  monochrome 12 bit, default is monochrome 8 bit
                     self.remote_node_map.FindNode("PixelFormat").SetCurrentEntry("Mono12") 
@@ -519,14 +522,18 @@ class IDS(CameraABC):
             minimum allowed increments for the horizontal and
             vertical position of the roi.
         """
-        #https://www.1stvision.com/cameras/IDS/IDS-manuals/en/program-set-roi.html
-        roi_min = (self.remote_node_map.FindNode("Width").Minimum(), self.remote_node_map.FindNode("Height").Minimum())
-        roi_max = (self.remote_node_map.FindNode("Width").Maximum(), self.remote_node_map.FindNode("Height").Maximum())
+        if self.remote_node_map is not None:
+            return (0,0), (1000,1000), (2,2),(2,2)
+        else:
+            #https://www.1stvision.com/cameras/IDS/IDS-manuals/en/program-set-roi.html
+            roi_min = (self.remote_node_map.FindNode("Width").Minimum(), self.remote_node_map.FindNode("Height").Minimum())
+            roi_max = (self.remote_node_map.FindNode("Width").Maximum(), self.remote_node_map.FindNode("Height").Maximum())
 
-        roi_increments = (self.remote_node_map.FindNode("Width").Increment(), self.remote_node_map.FindNode("Height").Increment())
-        roi_offset_increments = (self.remote_node_map.FindNode("OffsetX").Increment(), self.remote_node_map.FindNode("OffsetY").Increment())
+            roi_increments = (self.remote_node_map.FindNode("Width").Increment(), self.remote_node_map.FindNode("Height").Increment())
+            roi_offset_increments = (self.remote_node_map.FindNode("OffsetX").Increment(), self.remote_node_map.FindNode("OffsetY").Increment())
 
-        return roi_min, roi_max, roi_increments, roi_offset_increments
+            return roi_min, roi_max, roi_increments, roi_offset_increments
+
 
     def reset(self):
         """Reset the camera to FACTORY default settings."""
@@ -557,14 +564,7 @@ class IDS(CameraABC):
         -------
         None
         """
-        if self.__has_callback is not None:
-            try:
-                self.frame_ready.disconnect(self.__has_callback)
-            except Exception:
-                pass
-        self.__has_callback = on_frame_ready
-        if callable(on_frame_ready):
-            self.frame_ready.connect(on_frame_ready)
+        return
 
     @qtc.pyqtSlot()
     @qtc.pyqtSlot(object)
@@ -589,6 +589,16 @@ class IDS(CameraABC):
             self._live_worker.frame_ready.connect(self.frame_ready.emit)
             
             self._live_thread.start()
+
+            #copied it from imagingsource.py, necessary that viperleed runs correctly TODO:
+            frame_interval = self.frame_interval
+            if self.exposure < frame_interval - 0.1:
+                print(                                                              # TODO: should become a non-fatal warning
+                    f"WARNING: Exposure ({self.exposure} ms) of camera "
+                    f"{self.name} is shorter than the time it takes to "
+                    f"deliver frames ({frame_interval:.2f} ms). Increase "
+                    "the exposure time to avoid wasting time."
+                    )
 
         elif self.mode == "triggered":
 
