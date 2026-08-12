@@ -50,15 +50,16 @@ class IDS(CameraABC):
     def __init__(self, *args, settings=None, parent=None, **kwargs):
         """Initialize instance."""
         #self.hardware_supported_features.extend(['roi', 'black_level', 'color_format']) #TODO: IDS camera hardware support roi, black_level and color_format (get_[name] and set_[name] methods need to be implemented)
-          
+        self.hardware_supported_features.extend(['roi'])
         #initialize the ids_peak library
         ids_peak.Library.Initialize()            
-        
+
         self.device = None
         self.datastream = None
         self.remote_node_map = None
         self.has_zero_minimum = False
-
+        
+        
         self.__has_callback = None
         self._live_thread = None
         self._live_worker = None
@@ -113,24 +114,32 @@ class IDS(CameraABC):
         """
         #If you change the image size, you must stop image acquisition and recreate the buffers, see Starting and stopping image acquisition and Preparing image acquisition: create buffer.
         #at https://www.1stvision.com/cameras/IDS/IDS-manuals/en/height.html 
+        # width = 1936
+        # height = 1216
+        if self.remote_node_map is None:
+            width = 1936
+            height = 1216
+            
+        try:
+            width = self.remote_node_map.FindNode("Width").Value()
+            height = self.remote_node_map.FindNode("Height").Value()
 
-        width = self.remote_node_map.FindNode("Width").Value()
-        height = self.remote_node_map.FindNode("Height").Value()
+            pixel_format = self._pixel_format
 
-        pixel_format = self.remote_node_map.FindNode("PixelFormat").CurrentEntry().SymbolicValue()
+            if "16" in pixel_format:
+                n_bytes = 2
+            elif "12p" in pixel_format or "10p" in pixel_format:
+                n_bytes = 2  
+            elif "12" in pixel_format or "10" in pixel_format:
+                n_bytes = 2 
+            else:
+                n_bytes = 1
 
-        if "16" in pixel_format:
-            n_bytes = 2
-        elif "12p" in pixel_format or "10p" in pixel_format:
-            n_bytes = 2  
-        elif "12" in pixel_format or "10" in pixel_format:
-            n_bytes = 2 
-        else:
-            n_bytes = 1
-
-        #only monochromatic ids cameras are used
-        n_colors = 1
-        return width, height, n_bytes, n_colors
+            #only monochromatic ids cameras are used
+            n_colors = 1
+            return width, height, n_bytes, n_colors
+        except Exception:
+            return 1936,1216,2,1
 
     @property
     def intensity_limits(self):
@@ -325,6 +334,8 @@ class IDS(CameraABC):
             For each item, only .unique_name and .has_hardware_interface
             are set, i.e., there is no .more information.
         """
+        ids_peak.Library.Initialize()
+        self.device_manager = ids_peak.DeviceManager.Instance()
         self.device_manager.Update()
         present = True
         return  [SettingsInfo(name.DisplayName(),   present) for name in self.device_manager.Devices()]
@@ -340,25 +351,30 @@ class IDS(CameraABC):
         successful : bool
             True if the device was opened successfully.                     
         """
+
         #self.name to check if this works
         #self.name = "IDS UI326xCP-M (IDS/UI326xCP-M/4103712875-0)"
 
         try:
             # self.device_manager.Update()
+            ids_peak.Library.Initialize()
+            self.device_manager = ids_peak.DeviceManager.Instance()
+            self.device_manager.Update()
             #count is needed to open ANY ids camera and not just the first openable camera
             count = 0 
             for name in self.device_manager.Devices():
-                print("trying opening camera")
                 if name.DisplayName() == self.name:
-                    print("camera open")
+                    
                     self.device = self.device_manager.Devices()[count].OpenDevice(ids_peak.DeviceAccessType_Control)
+                    self.set_roi(no_roi=True)
 
                     self.remote_node_map = self.device.RemoteDevice().NodeMaps()[0]
                     self.datastream = self.device.DataStreams()[0].OpenDataStream()
-                    print("camera opened")
 
                     #set the pixelformat for used ids cameras to  monochrome 12 bit, default is monochrome 8 bit
-                    self.remote_node_map.FindNode("PixelFormat").SetCurrentEntry("Mono12") 
+                    self.remote_node_map.FindNode("PixelFormat").SetCurrentEntry("Mono12")
+                    self._pixel_format = self.remote_node_map.FindNode("PixelFormat").CurrentEntry().SymbolicValue() 
+                    self.set_roi()
 
                     return True
                 count+=1
@@ -367,7 +383,8 @@ class IDS(CameraABC):
         except Exception: 
             return False
 
-    def get_binning(self):
+    def get_binning(self): #TODO: Reactivate binning function and implement set_binning: File "/home/aop2diplom/viperleed-git/src/viperleed/gui/measure/camera/abc.py", line 1073, in set_binning raise NotImplementedError(NotImplementedError: IDS natively supports binning, but self.set_binning() was not overridden.
+
         """IDS cameras support binning, even in vertical AND horizontal direction.
         
         Returns
@@ -378,15 +395,17 @@ class IDS(CameraABC):
                 binning_factor = max(binning_vertical, binning_horizontal) 
                 Tested IDS Cameras only support a binning_factor of max. 2
         """ 
-
-        binning_vertical = self.remote_node_map.FindNode("BinningVertical").Value()
-        binning_horizontal = self.remote_node_map.FindNode("BinningHorizontal").Value()
+        if self.remote_node_map is None:
+            return None
+        # binning_vertical = self.remote_node_map.FindNode("BinningVertical").Value()
+        # binning_horizontal = self.remote_node_map.FindNode("BinningHorizontal").Value()
         
-        if binning_vertical == binning_horizontal:
-            return binning_vertical
-        else:
-            self.remote_node_map.FindNode("BinningVertical").SetValue(binning_horizontal)
-            return binning_horizontal
+        # if binning_vertical == binning_horizontal:
+        #     return binning_vertical
+        # else:
+        #     self.remote_node_map.FindNode("BinningVertical").SetValue(binning_horizontal)
+        #     return binning_horizontal
+
             
 
     def get_exposure(self):
@@ -493,14 +512,39 @@ class IDS(CameraABC):
             roi_width, roi_height : int
                 Width and height of the region of interest in pixels
         """
-        #https://www.1stvision.com/cameras/IDS/IDS-manuals/en/program-set-roi.html
-        roi_x = self.remote_node_map.FindNode("OffsetX").Value()
-        roi_y = self.remote_node_map.FindNode("OffsetY").Value()
-        roi_width = self.remote_node_map.FindNode("Width").Value()
-        roi_height = self.remote_node_map.FindNode("Height").Value()
+        if self.remote_node_map is None:
+             return (0,0,1936,1216)
+        else:
+            #https://www.1stvision.com/cameras/IDS/IDS-manuals/en/program-set-roi.html
+            roi_x = self.remote_node_map.FindNode("OffsetX").Value()
+            roi_y = self.remote_node_map.FindNode("OffsetY").Value()
+            roi_width = self.remote_node_map.FindNode("Width").Value()
+            roi_height = self.remote_node_map.FindNode("Height").Value()
 
-        return roi_x, roi_y, roi_width, roi_height
+            return roi_x, roi_y, roi_width, roi_height
 
+    def set_roi(self,no_roi =False):
+        """Set up region of interest in the camera
+        
+        Parameters
+        -----------
+        no_roi : bool, optional
+            If True, set the ROI to the full size of the sensor rather
+            than using the value from the settings. Default is True.
+        """
+        if self.remote_node_map is None:
+            return
+        
+        if no_roi:      
+            roi = (0, 0, self.remote_node_map.FindNode("Width").Maximum(), self.remote_node_map.FindNode("Height").Maximum())
+        else:
+            roi = self.roi
+        roi_x, roi_y, roi_width, roi_height = roi
+        
+        self.remote_node_map.FindNode("Width").SetValue(roi_width)
+        self.remote_node_map.FindNode("Height").SetValue(roi_height)
+        self.remote_node_map.FindNode("OffsetX").SetValue(roi_x)
+        self.remote_node_map.FindNode("OffsetY").SetValue(roi_y)
 
     def get_roi_size_limits(self):
         """Return minimum, maximum and granularity of the ROI.
@@ -522,8 +566,8 @@ class IDS(CameraABC):
             minimum allowed increments for the horizontal and
             vertical position of the roi.
         """
-        if self.remote_node_map is not None:
-            return (0,0), (1000,1000), (2,2),(2,2)
+        if self.remote_node_map is None:
+            return (0,0), (1936,1216), (2,2),(2,2)
         else:
             #https://www.1stvision.com/cameras/IDS/IDS-manuals/en/program-set-roi.html
             roi_min = (self.remote_node_map.FindNode("Width").Minimum(), self.remote_node_map.FindNode("Height").Minimum())
@@ -589,16 +633,6 @@ class IDS(CameraABC):
             self._live_worker.frame_ready.connect(self.frame_ready.emit)
             
             self._live_thread.start()
-
-            #copied it from imagingsource.py, necessary that viperleed runs correctly TODO:
-            frame_interval = self.frame_interval
-            if self.exposure < frame_interval - 0.1:
-                print(                                                              # TODO: should become a non-fatal warning
-                    f"WARNING: Exposure ({self.exposure} ms) of camera "
-                    f"{self.name} is shorter than the time it takes to "
-                    f"deliver frames ({frame_interval:.2f} ms). Increase "
-                    "the exposure time to avoid wasting time."
-                    )
 
         elif self.mode == "triggered":
 
