@@ -45,8 +45,12 @@ class LiveWorker(qtc.QObject):
 class IDS(CameraABC):
     """Concrete subclass of CameraABC handling IDS_peak Cameras."""
 
-    #_mandatory_settings = (*CameraABC._mandatory_settings,)
-    
+    _mandatory_settings = (
+        # pylint: disable=protected-access
+        # Needed for extending
+        *CameraABC._mandatory_settings,
+        ('camera_settings', 'black_level'),
+        )  
     def __init__(self, *args, settings=None, parent=None, **kwargs):
         """Initialize instance."""
         #self.hardware_supported_features.extend(['roi', 'black_level', 'color_format']) #TODO: IDS camera hardware support roi, black_level and color_format (get_[name] and set_[name] methods need to be implemented)
@@ -54,6 +58,7 @@ class IDS(CameraABC):
         #initialize the ids_peak library
         ids_peak.Library.Initialize()            
 
+        
         self.device = None
         self.datastream = None
         self.remote_node_map = None
@@ -67,7 +72,7 @@ class IDS(CameraABC):
 
         #initialize device_manager used in list_devices() and open()
         
-        self.device_manager = ids_peak.DeviceManager.Instance()
+        #self.device_manager = ids_peak.DeviceManager.Instance()
         super().__init__(ids_peak,*args,settings=settings, parent=parent, **kwargs)
 
         
@@ -155,39 +160,41 @@ class IDS(CameraABC):
         #IDS Cameras can generate a test image according to https://www.1stvision.com/cameras/IDS/IDS-manuals/en/test-pattern.html
         #Black: The sensor generates a test image with the darkest possible image.
         #White: The sensor generates a test image with the brightest possible image.
-
-        pixel_format = self.remote_node_map.FindNode("PixelFormat").CurrentEntry().SymbolicValue()
-
-        #this if segment is only for monochromatic ids cameras and could be densed down
-        # if this way of calculating the pixel_min and pixel_max can't be checked for Mono12p and Mono10p ()
-        if "12" in pixel_format:  #Mono12
-            n_bytes = 2  
-            dyn_range = 12
-        elif  "10" in pixel_format: #Mono10
-            n_bytes = 2
-            dyn_range = 10 
-        else:                       #Mono8
-            n_bytes = 1
-            dyn_range = 8  
-
-        max_bit = n_bytes * 8
-
-        if max_bit >= dyn_range:
-            self.has_zero_minimum = True
+        if self.remote_node_map is None:
+            return 0, 65520
         else:
-            self.has_zero_minimum = False
+            pixel_format = self.remote_node_map.FindNode("PixelFormat").CurrentEntry().SymbolicValue()
 
-        if self.has_zero_minimum:
-            min_bit = 0
-            delta = 1
-        else:
-            min_bit = max_bit - dyn_range
-            delta = 0
+            #this if segment is only for monochromatic ids cameras and could be densed down
+            # if this way of calculating the pixel_min and pixel_max can't be checked for Mono12p and Mono10p ()
+            if "12" in pixel_format:  #Mono12
+                n_bytes = 2  
+                dyn_range = 12
+            elif  "10" in pixel_format: #Mono10
+                n_bytes = 2
+                dyn_range = 10 
+            else:                       #Mono8
+                n_bytes = 1
+                dyn_range = 8  
 
-        pixel_min = 2**min_bit-delta
-        pixel_max = 2**max_bit - 2**(max_bit-dyn_range) +2**min_bit - 1
+            max_bit = n_bytes * 8
 
-        return pixel_min, pixel_max
+            if max_bit >= dyn_range:
+                self.has_zero_minimum = True
+            else:
+                self.has_zero_minimum = False
+
+            if self.has_zero_minimum:
+                min_bit = 0
+                delta = 1
+            else:
+                min_bit = max_bit - dyn_range
+                delta = 0
+
+            pixel_min = 2**min_bit-delta
+            pixel_max = 2**max_bit - 2**(max_bit-dyn_range) +2**min_bit - 1
+
+            return pixel_min, pixel_max
 
     @property
     def is_running(self):
@@ -355,33 +362,39 @@ class IDS(CameraABC):
         #self.name to check if this works
         #self.name = "IDS UI326xCP-M (IDS/UI326xCP-M/4103712875-0)"
 
+        ids_peak.Library.Initialize()
+        self.device_manager = ids_peak.DeviceManager.Instance()
+        self.device_manager.Update()
+        #count is needed to open ANY ids camera and not just the first openable camera
+        count = 0
+       
+
         try:
-            # self.device_manager.Update()
-            ids_peak.Library.Initialize()
-            self.device_manager = ids_peak.DeviceManager.Instance()
-            self.device_manager.Update()
-            #count is needed to open ANY ids camera and not just the first openable camera
-            count = 0 
             for name in self.device_manager.Devices():
                 if name.DisplayName() == self.name:
-                    
-                    self.device = self.device_manager.Devices()[count].OpenDevice(ids_peak.DeviceAccessType_Control)
-                    self.set_roi(no_roi=True)
 
+                    self.device = self.device_manager.Devices()[count].OpenDevice(ids_peak.DeviceAccessType_Control)
                     self.remote_node_map = self.device.RemoteDevice().NodeMaps()[0]
                     self.datastream = self.device.DataStreams()[0].OpenDataStream()
+ 
 
-                    #set the pixelformat for used ids cameras to  monochrome 12 bit, default is monochrome 8 bit
-                    self.remote_node_map.FindNode("PixelFormat").SetCurrentEntry("Mono12")
-                    self._pixel_format = self.remote_node_map.FindNode("PixelFormat").CurrentEntry().SymbolicValue() 
-                    self.set_roi()
-
-                    return True
+                    
                 count+=1
-            return False
-                
-        except Exception: 
-            return False
+        finally:
+            if self.device is None:
+                raise RuntimeError
+            elif self.remote_node_map is None:
+                raise RuntimeError
+            elif self.datastream is None:
+                raise RuntimeError
+            
+            self.set_roi(no_roi=True)
+            #set the pixelformat for used ids cameras to  monochrome 12 bit, default is monochrome 8 bit
+            self.remote_node_map.FindNode("PixelFormat").SetCurrentEntry("Mono12")
+            self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("SingleFrame")
+            self._pixel_format = self.remote_node_map.FindNode("PixelFormat").CurrentEntry().SymbolicValue() 
+            self.set_roi()
+            return True
 
     def get_binning(self): #TODO: Reactivate binning function and implement set_binning: File "/home/aop2diplom/viperleed-git/src/viperleed/gui/measure/camera/abc.py", line 1073, in set_binning raise NotImplementedError(NotImplementedError: IDS natively supports binning, but self.set_binning() was not overridden.
 
@@ -411,12 +424,16 @@ class IDS(CameraABC):
     def get_exposure(self):
         """Return the exposure time in milliseconds set in the camera.""" #ids cameras use microseconds
         #https://www.1stvision.com/cameras/IDS/IDS-manuals/en/exposure-time.html
-        return self.remote_node_map.FindNode("ExposureTime").Value() / 1000
+        return self.remote_node_map.FindNode("ExposureTime").Value()
 
     def set_exposure(self):
         """Set the exposure time.""" #ids cameras use microseconds
         #https://www.1stvision.com/cameras/IDS/IDS-manuals/en/exposure-time.html
-        self.remote_node_map.FindNode("ExposureTime").SetValue(self.exposure * 1000)
+        
+        if self.remote_node_map is None:
+            return
+        else:
+            self.remote_node_map.FindNode("ExposureTime").SetValue(self.exposure)
 
     def get_exposure_limits(self): 
         """Return the minimum and maximum exposure time supported.
@@ -427,8 +444,11 @@ class IDS(CameraABC):
             Shortest and longest exposure times in milliseconds
         """
         #ids cameras use microseconds 
-        exposure_time = self.remote_node_map.FindNode("ExposureTime")       
-        return exposure_time.Minimum() / 1000, exposure_time.Maximum() / 1000
+        if self.remote_node_map is None:
+            return 0.035, 100
+        else:
+            exposure_time = self.remote_node_map.FindNode("ExposureTime")       
+            return exposure_time.Minimum(), exposure_time.Maximum()
 
     def get_frame_rate(self):
         """Return the number of frames delivered per second
@@ -438,7 +458,10 @@ class IDS(CameraABC):
         frame_rate : float
             Number of frames delivered per second.                
         """
-        return self.remote_node_map.FindNode("AcquisitionFrameRate").Value() 
+        if self.remote_node_map is None:
+            return 30.5
+        else:
+            return self.remote_node_map.FindNode("AcquisitionFrameRate").Value() 
 
     def get_gain(self):
         """Get the gain in dB from camera.
@@ -449,11 +472,21 @@ class IDS(CameraABC):
             Gain in decibel.
 
         """
-        return self.remote_node_map.FindNode("Gain").Value()
+        gain_test = 24.0
+        self.remote_node_map.FindNode("Gain").SetValue(gain_test)
+        raise RuntimeError(f"{gain_test}, {self.remote_node_map.FindNode("Gain").Value()}")
+        # raise RuntimeError(f"{self.remote_node_map.FindNode("Gain").Minimum()},{self.remote_node_map.FindNode("Gain").Maximum()}")
+        if self.remote_node_map is None:
+            return 1.00
+        else:
+            return self.remote_node_map.FindNode("Gain").Value()
     
     def set_gain(self):
         """Set the gain of the camera in dB."""
-        self.remote_node_map.FindNode("Gain").SetValue(self.gain)
+
+        #raise RuntimeError(f"{self.remote_node_map.FindNode("Gain").Value()}, {self.gain}")
+        if self.remote_node_map is not None:
+            self.remote_node_map.FindNode("Gain").SetValue(self.gain)
 
     def get_gain_limits(self):
         """Returns the minimum and maximum gains supported.
@@ -463,9 +496,12 @@ class IDS(CameraABC):
         min_gain, max_gain : float
 
         """
-        gain_min = self.remote_node_map.FindNode("Gain").Minimum()
-        gain_max = self.remote_node_map.FindNode("Gain").Maximum()
-        return gain_min , gain_max
+        if self.remote_node_map is None:
+            return 0,24.0
+        else:
+            gain_min = self.remote_node_map.FindNode("Gain").Minimum()
+            gain_max = self.remote_node_map.FindNode("Gain").Maximum()
+            return gain_min , gain_max
     
 
     def get_mode(self):
@@ -487,8 +523,8 @@ class IDS(CameraABC):
         return 'triggered' if self.remote_node_map.FindNode("AcquisitionMode").CurrentEntry().SymbolicValue() != "Continuous" else "live"
 
     def set_mode(self):
-        """Set the camera mode""" 
-        if self.mode == "triggered":
+        """Set the camera mode"""
+        if self.mode == "triggered" and self.device is not None:
             self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("SingleFrame")
         else:
             self.remote_node_map.FindNode("TriggerMode").SetCurrentEntry("Off")
@@ -617,7 +653,8 @@ class IDS(CameraABC):
         Returns
         -------
         None.
-        """        
+        """
+
         super().start()
         self.alloc_buffer()
 
@@ -762,7 +799,8 @@ class IDS(CameraABC):
     def alloc_buffer(self):
         """Allocates the buffer, needed for start()"""
         if self.device is None:
-            raise RuntimeError
+            raise RuntimeError("alloc Buffer")
+            
         
         #Buffer size
         payload_size = self.remote_node_map.FindNode("PayloadSize").Value()
