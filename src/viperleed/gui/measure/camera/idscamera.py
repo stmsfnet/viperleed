@@ -136,7 +136,7 @@ class IDS(CameraABC):
             n_colors = 1
             return width, height, n_bytes, n_colors
         except Exception as e:
-            print("EXCEPTION: " + str(e))
+            print("EXCEPTION: image_info()" + str(e))
             return 1936,1216,2,1
 
     @property
@@ -199,16 +199,13 @@ class IDS(CameraABC):
             True if the camera firmware is currently acquiring or
             processing images, False otherwise.
         """ 
-        if self.device is None or self.datastream is None:
-            return False
-        
+        return True
         #SensorState according to: https://www.1stvision.com/cameras/IDS/IDS-manuals/en/sensor-state.html  -> only available uEye+: GV and U3 cameras     
         #sensor_state = self.remote_node_map.FindNode("SensorState").CurrentEntry().SymbolicValue()
         
-        try:
-            return self.datastream.NodeMaps()[0].FindNode("StreamIsGrabbing").Value() 
-        except Exception as e:
-            print("EXCEPTION: " + str(e))
+        if self.datastream is None:
+            return False
+        
 
 
 
@@ -223,14 +220,12 @@ class IDS(CameraABC):
             frames, i.e., only one 'trigger_now()' call is necessary to
             deliver all the frames needed.
         """
-        return False
-        # print("supports_trigger_burst starts")
-        # try:
-        #     self.remote_node_map.TryFindNode("AcquisitionMode").SetCurrentEntry("MultiFrame")
-        #     return True
-        # except Exception as e:
-        #     print("EXCEPTION: " + str(e))
-        #     return False
+        try:
+            self.remote_node_map.TryFindNode("AcquisitionMode").SetCurrentEntry("MultiFrame")
+            return True
+        except Exception as e:
+            print("EXCEPTION: " + str(e))
+            return False
 
     def check_loaded_settings(self):
         """IDS Cameras exposure and gain values are discrete. 
@@ -270,7 +265,6 @@ class IDS(CameraABC):
         
 
         if self.device is not None:
-            print("Close() startet")
             self.stop()
             self.datastream = None
             self.remote_node_map = None
@@ -403,7 +397,7 @@ class IDS(CameraABC):
                     if name.DisplayName() == self.name:
                         self.device = self.device_manager.Devices()[i].OpenDevice(ids_peak.DeviceAccessType_Control)
             except Exception as e:
-                print("EXCEPTION: " + str(e))            
+                print("EXCEPTION: open()" + str(e))            
             finally:
                 # print(self.device.DisplayName())
                 if self.device is None:
@@ -546,12 +540,9 @@ class IDS(CameraABC):
 
     def set_mode(self):
         """Set the camera mode"""
-        print("set_mode startet")
         if self.mode == "triggered" and self.device is not None:
             self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("SingleFrame")
-            print(f"set_mode = {self.remote_node_map.FindNode("AcquisitionMode").CurrentEntry().SymbolicValue()}")
         else:
-            print(f"set_mode = {self.remote_node_map.FindNode("AcquisitionMode").CurrentEntry().SymbolicValue()}")
             self.remote_node_map.FindNode("TriggerMode").SetCurrentEntry("Off")
             self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("Continuous") 
 
@@ -684,12 +675,14 @@ class IDS(CameraABC):
         
         super().start()
 
+
         if self.mode == "triggered":
             print(f"start() , self.mode = {self.mode}")
             self.revoke_buffer()
             self.alloc_buffer()
-            self.n_frames_done = 0
-            self.init_software_trigger()             
+            self.n_frames_done = 0  
+            self.init_software_trigger()
+                     
 
         # if self.mode == "live":
         #     self.alloc_buffer()
@@ -706,7 +699,6 @@ class IDS(CameraABC):
         #     self._live_thread.start()                    
         
         self.started.emit()
-        print("self.started.emit() done")
 
     @qtc.pyqtSlot()
     def stop(self):
@@ -714,29 +706,30 @@ class IDS(CameraABC):
         if not super().stop():
             # No need to stop, or cannot stop yet
             return False
-        
-        try:
-            #stop thread
-            if self._live_worker is not None:
-                self._live_worker.stop()
-            if self._live_thread is not None:
-                self._live_thread.quit()
-                self._live_thread.wait()
-                self._live_thread = None
-                self._live_worker = None
+        #stop acquisition on camera
+        if self.remote_node_map is None:
+            return False
+        self.remote_node_map.FindNode("AcquisitionStop").Execute()
 
-            #stop acquisition on camera
-            self.remote_node_map.FindNode("AcquisitionStop").Execute()
+        #stop and flush the datastream
+        if self.datastream.IsGrabbing():
+            self.datastream.StopAcquisition(ids_peak.AcquisitionStopMode_Kill)
+        #revoke all buffers ( Discard all buffers from the acquisition engine, because they remain in the announced buffer pool.)
+        self.revoke_buffer()
 
-            #stop and flush the datastream
-            if self.datastream.IsGrabbing():
-                self.datastream.StopAcquisition(ids_peak.AcquisitionStopMode_Kill)
-
-            #revoke all buffers ( Discard all buffers from the acquisition engine, because they remain in the announced buffer pool.)
-            self.revoke_buffer()
-
-        except Exception as e:
-            print("EXCEPTION: " + str(e))
+        # #threading
+        # try:
+        #     print("stop1")
+        #     #stop thread
+        #     if self._live_worker is not None:
+        #         self._live_worker.stop()
+        #     if self._live_thread is not None:
+        #         self._live_thread.quit()
+        #         self._live_thread.wait()
+        #         self._live_thread = None
+        #         self._live_worker = None
+        # except Exception as e:
+        #     print("EXCEPTION: stop()" + str(e))
 
         self.stopped.emit()
         return True
@@ -755,12 +748,14 @@ class IDS(CameraABC):
         -----
         error_occurred(CameraErrors.UNSUPPORTED_OPERATION)
         """
+        self.busy = True
         print("trigger_now startet")
         if not super().trigger_now():
             return False
-        
-        self.datastream.StartAcquisition()
 
+        self.datastream.StartAcquisition()   
+    
+            
         #Lock writable nodes, which could influence the payload size during acquisition.
         self.remote_node_map.FindNode("TLParamsLocked").SetValue(1)
         self.remote_node_map.FindNode("AcquisitionStart").Execute()
@@ -771,8 +766,14 @@ class IDS(CameraABC):
         self.remote_node_map.FindNode("TriggerSoftware").Execute()
         self.remote_node_map.FindNode("TriggerSoftware").WaitUntilDone()
 
-        buffer = self.datastream.WaitForFinishedBuffer(5000) #5000ms timeout is used in ids cameras example code
+        buffer = self.datastream.WaitForFinishedBuffer(50000) #5000ms timeout is used in ids cameras example code
         self._buff_to_numpy(buffer)
+        self.datastream.QueueBuffer(buffer)
+
+
+        self.remote_node_map.FindNode("TLParamsLocked").SetValue(0)
+        self.datastream.StopAcquisition()
+
         return True
         # if buffer.HasImage():
         #     captured_image = self._buff_to_numpy(buffer)
@@ -812,9 +813,13 @@ class IDS(CameraABC):
 
         Emits image.copy()
         """
+        print("self._buff_to_numpy startet")
         raw_image = ids_ipl_extension.BufferToImage(buffer)
-        #image = Image.fromarray(raw_image)
-        return raw_image.get_numpy_2D_16().byteswap(True).copy()
+
+        image = raw_image.get_numpy_2D_16().byteswap(True)
+        self.frame_ready.emit(image)
+        # return raw_image.get_numpy_2D_16().byteswap(True).copy()
+    
         # try:
         #     raw_image = ids_ipl_extension.BufferToImage(buffer)
         #     #image = Image.fromarray(raw_image)
@@ -830,7 +835,7 @@ class IDS(CameraABC):
         self.remote_node_map.FindNode("TriggerSelector").SetCurrentEntry("ExposureStart")
         self.remote_node_map.FindNode("TriggerMode").SetCurrentEntry("On")
         self.remote_node_map.FindNode("TriggerSource").SetCurrentEntry("Software")
-        print("init_software_trigger done")
+
 
     def alloc_buffer(self):
         """Allocates the buffer, needed for start()"""
@@ -847,7 +852,6 @@ class IDS(CameraABC):
         for _ in range(self.num_buffers_min_required):
             buffer = self.datastream.AllocAndAnnounceBuffer(payload_size)
             self.datastream.QueueBuffer(buffer)
-        print("alloc_buffer done")
         
     def revoke_buffer(self):
         """Revokes the buffer, needed for stop()"""
@@ -861,4 +865,3 @@ class IDS(CameraABC):
         #Clear all old buffers
         for buffer in self.datastream.AnnouncedBuffers():
             self.datastream.RevokeBuffer(buffer)
-        print("revoke_buffer() done!")
