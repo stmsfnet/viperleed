@@ -116,15 +116,13 @@ class IDS(CameraABC):
         #If you change the image size, you must stop image acquisition and recreate the buffers, see Starting and stopping image acquisition and Preparing image acquisition: create buffer.
         #at https://www.1stvision.com/cameras/IDS/IDS-manuals/en/height.html 
         if self.remote_node_map is None:
-            width = 1936
-            height = 1216
+            raise RuntimeError("remote_node_map is None")
             
         try:
             width = self.remote_node_map.FindNode("Width").Value()
             height = self.remote_node_map.FindNode("Height").Value()
-
-            pixel_format = self._pixel_format
-
+            
+            pixel_format = self.remote_node_map.FindNode("PixelFormat").CurrentEntry().SymbolicValue() 
             if "16" in pixel_format:
                 n_bytes = 2
             elif "12p" in pixel_format or "10p" in pixel_format:
@@ -225,33 +223,59 @@ class IDS(CameraABC):
             frames, i.e., only one 'trigger_now()' call is necessary to
             deliver all the frames needed.
         """
-        
-        try:
-            self.remote_node_map.TryFindNode("AcquisitionMode").SetCurrentEntry("MultiFrame")
-            return True
-        except Exception as e:
-            print("EXCEPTION: " + str(e))
-            return False
+        return False
+        # print("supports_trigger_burst starts")
+        # try:
+        #     self.remote_node_map.TryFindNode("AcquisitionMode").SetCurrentEntry("MultiFrame")
+        #     return True
+        # except Exception as e:
+        #     print("EXCEPTION: " + str(e))
+        #     return False
 
     def check_loaded_settings(self):
-        expected_gain = self.gain
-        real_gain = self.get_gain()
+        """IDS Cameras exposure and gain values are discrete. 
+        This assures that the values in self.settings match with the real values in the camera.
+        
+        Returns
+        --------
+        setting_match : bool
+            True if the settings in the camera and in self.settings
+            are the same.
+
+        """
+
+        real_exposure = self.remote_node_map.FindNode("ExposureTime").Value()
+        expected_exposure = self.settings.getfloat('measurement_settings','exposure')
+
+        real_gain = self.remote_node_map.FindNode("Gain").Value()
+        expected_gain = self.settings.getfloat('measurement_settings','gain')
+
+        if expected_exposure != real_exposure:
+            # print(f"check_loaded_settings startet: {expected_exposure} != {real_exposure}")
+            self.settings.set('measurement_settings', 'exposure', str(real_exposure))
+
 
         if expected_gain != real_gain:
-            print(f"check_loaded_settings startet: {expected_gain} != {real_gain}")
-            self.settings.set('measurement_settings', 'gain', real_gain)
-            self.settings.update_file()
+            # print(f"check_loaded_settings startet: {expected_gain} != {real_gain}")
+            self.settings.set('measurement_settings', 'gain', str(real_gain))
         
+        self.settings.update_file()
+
         return super().check_loaded_settings()
 
 
     def close(self):
         """Closes the camera. 'For IDS cameras the reference to the object must be destroy, 
         by either going out-of-scope or by explicitly overwriting the variable.' """
+        
+
         if self.device is not None:
+            print("Close() startet")
             self.stop()
             self.datastream = None
-            self.device = None 
+            self.remote_node_map = None
+            self.device = None
+
         ids_peak.Library.Close()
 
     @classmethod
@@ -381,6 +405,9 @@ class IDS(CameraABC):
             except Exception as e:
                 print("EXCEPTION: " + str(e))            
             finally:
+                # print(self.device.DisplayName())
+                if self.device is None:
+                    return False
                 if self.remote_node_map is None:
                     self.remote_node_map = self.device.RemoteDevice().NodeMaps()[0]
                 if self.datastream is None:
@@ -392,7 +419,7 @@ class IDS(CameraABC):
                 self.remote_node_map.FindNode("PixelFormat").SetCurrentEntry("Mono12")
                 
                 self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("SingleFrame")
-                self._pixel_format = self.remote_node_map.FindNode("PixelFormat").CurrentEntry().SymbolicValue() 
+                # self._pixel_format = self.remote_node_map.FindNode("PixelFormat").CurrentEntry().SymbolicValue() 
                 self.set_roi()
 
                 return True
@@ -430,11 +457,8 @@ class IDS(CameraABC):
     def set_exposure(self):
         """Set the exposure time."""
         #https://www.1stvision.com/cameras/IDS/IDS-manuals/en/exposure-time.html
-        # if not self.open():
-        #     raise RuntimeError("camera isnt open")
         if self.remote_node_map is None:
-            raise RuntimeError("set_exposure, remotenodemap none")
-            return
+            raise RuntimeError("set_exposure, remotenodemap none") 
         else:
             self.remote_node_map.FindNode("ExposureTime").SetValue(self.exposure)
 
@@ -461,7 +485,6 @@ class IDS(CameraABC):
             Number of frames delivered per second.                
         """
         if self.remote_node_map is None:
-            raise RuntimeError("remotenodemap is none in get_frame_rate")
             return 30.5
         else:
             return self.remote_node_map.FindNode("AcquisitionFrameRate").Value() 
@@ -523,9 +546,12 @@ class IDS(CameraABC):
 
     def set_mode(self):
         """Set the camera mode"""
+        print("set_mode startet")
         if self.mode == "triggered" and self.device is not None:
             self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("SingleFrame")
+            print(f"set_mode = {self.remote_node_map.FindNode("AcquisitionMode").CurrentEntry().SymbolicValue()}")
         else:
+            print(f"set_mode = {self.remote_node_map.FindNode("AcquisitionMode").CurrentEntry().SymbolicValue()}")
             self.remote_node_map.FindNode("TriggerMode").SetCurrentEntry("Off")
             self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("Continuous") 
 
@@ -547,8 +573,6 @@ class IDS(CameraABC):
             roi_width, roi_height : int
                 Width and height of the region of interest in pixels
         """
-        
-    
         if self.remote_node_map is None:
             return (0,0,1936,1216)
         else:
@@ -645,6 +669,7 @@ class IDS(CameraABC):
         -------
         None
         """
+        print("set_callback startet")
         return
 
     @qtc.pyqtSlot()
@@ -655,30 +680,33 @@ class IDS(CameraABC):
         -------
         None.
         """
-
+        print("start(self,*) beginnt")
+        
         super().start()
-        self.alloc_buffer()
 
-        if self.mode == "live":
-            self.remote_node_map.FindNode("TLParamsLocked").SetValue(1)
-            self.datastream.StartAcquisition()
-            self.remote_node_map.FindNode("AcquisitionStart").Execute()
-
-            
-            self._live_worker = LiveWorker(self.device, self.datastream)
-            self._live_worker.moveToThread(self._live_thread)
-            self._live_thread.started.connect(self._live_worker.run)
-            self._live_worker.frame_ready.connect(self.frame_ready.emit)
-            
-            self._live_thread.start()
-
-        elif self.mode == "triggered":
-
+        if self.mode == "triggered":
+            print(f"start() , self.mode = {self.mode}")
+            self.revoke_buffer()
+            self.alloc_buffer()
             self.n_frames_done = 0
-            self.init_software_trigger()
+            self.init_software_trigger()             
+
+        # if self.mode == "live":
+        #     self.alloc_buffer()
+        #     print(f"start() , self.mode = {self.mode}")
+        #     self.remote_node_map.FindNode("TLParamsLocked").SetValue(1)
+        #     self.datastream.StartAcquisition()
+        #     self.remote_node_map.FindNode("AcquisitionStart").Execute()
             
+        #     self._live_worker = LiveWorker(self.device, self.datastream)
+        #     self._live_worker.moveToThread(self._live_thread)
+        #     self._live_thread.started.connect(self._live_worker.run)
+        #     self._live_worker.frame_ready.connect(self.frame_ready.emit)
+            
+        #     self._live_thread.start()                    
         
         self.started.emit()
+        print("self.started.emit() done")
 
     @qtc.pyqtSlot()
     def stop(self):
@@ -712,7 +740,8 @@ class IDS(CameraABC):
 
         self.stopped.emit()
         return True
-    
+
+    @qtc.pyqtSlot()
     def trigger_now(self):
 
         """Start acquiring one (or more) frames now.
@@ -726,51 +755,52 @@ class IDS(CameraABC):
         -----
         error_occurred(CameraErrors.UNSUPPORTED_OPERATION)
         """
-
+        print("trigger_now startet")
         if not super().trigger_now():
             return False
-        try:
-            self.busy = True
-            self.datastream.StartAcquisition()
+        
+        self.datastream.StartAcquisition()
 
-            #Lock writable nodes, which could influence the payload size during acquisition.
-            self.remote_node_map.FindNode("TLParamsLocked").SetValue(1)
-            self.remote_node_map.FindNode("AcquisitionStart").Execute()
-            #Check if the command has finished before you continue (optional)
-            self.remote_node_map.FindNode("AcquisitionStart").WaitUntilDone()
+        #Lock writable nodes, which could influence the payload size during acquisition.
+        self.remote_node_map.FindNode("TLParamsLocked").SetValue(1)
+        self.remote_node_map.FindNode("AcquisitionStart").Execute()
+        #Check if the command has finished before you continue (optional)
+        self.remote_node_map.FindNode("AcquisitionStart").WaitUntilDone()
 
-            #image trigger
-            self.remote_node_map.FindNode("TriggerSoftware").Execute()
-            self.remote_node_map.FindNode("TriggerSoftware").WaitUntilDone()
+        #image trigger
+        self.remote_node_map.FindNode("TriggerSoftware").Execute()
+        self.remote_node_map.FindNode("TriggerSoftware").WaitUntilDone()
 
-            buffer = self.datastream.WaitForFinishedBuffer(5000) #5000ms timeout is used in ids cameras example code
+        buffer = self.datastream.WaitForFinishedBuffer(5000) #5000ms timeout is used in ids cameras example code
+        self._buff_to_numpy(buffer)
+        return True
+        # if buffer.HasImage():
+        #     captured_image = self._buff_to_numpy(buffer)
+        #     self.frame_ready.emit(captured_image)
+        
+        # except:
+        #     pass
+        # finally:
+        #     if buffer is not None:
+        #         try:
+        #             self.datastream.QueueBuffer(buffer)
+        #         except Exception as e:
+        #             print("EXCEPTION: " + str(e))
+        #     try:
+        #         #Unlock writable nodes, which could influence the payload size during acquisition.
+        #         self.remote_node_map.FindNode("TLParamsLocked").SetValue(0)
 
-            if buffer.HasImage():
-                captured_image = self._buff_to_numpy(buffer)
-                self.frame_ready.emit(captured_image)
-        except:
-            pass
-        finally:
-            if buffer is not None:
-                try:
-                    self.datastream.QueueBuffer(buffer)
-                except Exception as e:
-                    print("EXCEPTION: " + str(e))
-            try:
-                #Unlock writable nodes, which could influence the payload size during acquisition.
-                self.remote_node_map.FindNode("TLParamsLocked").SetValue(0)
+        #         self.remote_node_map.FindNode("AcquisitionStop").Execute()
+        #         #Check if the command has finished before you continue (optional)
+        #         self.remote_node_map.FindNode("AcquisitionStop").WaitUntilDone()
 
-                self.remote_node_map.FindNode("AcquisitionStop").Execute()
-                #Check if the command has finished before you continue (optional)
-                self.remote_node_map.FindNode("AcquisitionStop").WaitUntilDone()
-
-                if self.datastream.IsGrabbing():
-                    self.datastream.StopAcquisition(ids_peak.AcquisitionStopMode_Kill)
-            except Exception as e:
-                print("EXCEPTION: " + str(e))
-                return False
-            self.busy = False
-            return True
+        #         if self.datastream.IsGrabbing():
+        #             self.datastream.StopAcquisition(ids_peak.AcquisitionStopMode_Kill)
+        #     except Exception as e:
+        #         print("EXCEPTION: " + str(e))
+        #         return False
+            # self.busy = False
+            # return True
 
 
     def _buff_to_numpy(self, buffer): 
@@ -782,14 +812,16 @@ class IDS(CameraABC):
 
         Emits image.copy()
         """
-        try:
-            raw_image = ids_ipl_extension.BufferToImage(buffer)
-            #image = Image.fromarray(raw_image)
-            return raw_image.get_numpy_2D_16().byteswap(True)
-        except Exception as e:
-            print("EXCEPTION: " + str(e))
-            return None  
-
+        raw_image = ids_ipl_extension.BufferToImage(buffer)
+        #image = Image.fromarray(raw_image)
+        return raw_image.get_numpy_2D_16().byteswap(True).copy()
+        # try:
+        #     raw_image = ids_ipl_extension.BufferToImage(buffer)
+        #     #image = Image.fromarray(raw_image)
+        #     return raw_image.get_numpy_2D_16().byteswap(True)
+        # except Exception as e:
+        #     print("EXCEPTION: " + str(e))
+        #     return None  
 
     def init_software_trigger(self):
         """Initialize the software Trigger.
@@ -798,13 +830,13 @@ class IDS(CameraABC):
         self.remote_node_map.FindNode("TriggerSelector").SetCurrentEntry("ExposureStart")
         self.remote_node_map.FindNode("TriggerMode").SetCurrentEntry("On")
         self.remote_node_map.FindNode("TriggerSource").SetCurrentEntry("Software")
+        print("init_software_trigger done")
 
     def alloc_buffer(self):
         """Allocates the buffer, needed for start()"""
         if self.device is None:
-            raise RuntimeError("alloc Buffer")
+            raise RuntimeError
             
-        
         #Buffer size
         payload_size = self.remote_node_map.FindNode("PayloadSize").Value()
 
@@ -815,9 +847,11 @@ class IDS(CameraABC):
         for _ in range(self.num_buffers_min_required):
             buffer = self.datastream.AllocAndAnnounceBuffer(payload_size)
             self.datastream.QueueBuffer(buffer)
+        print("alloc_buffer done")
         
     def revoke_buffer(self):
         """Revokes the buffer, needed for stop()"""
+        
         if self.device is None:
             raise RuntimeError
         
@@ -827,3 +861,4 @@ class IDS(CameraABC):
         #Clear all old buffers
         for buffer in self.datastream.AnnouncedBuffers():
             self.datastream.RevokeBuffer(buffer)
+        print("revoke_buffer() done!")
