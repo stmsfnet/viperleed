@@ -1,6 +1,7 @@
 import ids_peak.ids_peak as ids_peak
 import ids_peak.ids_peak_ipl_extension as ids_ipl_extension
-import ids_peak_ipl.ids_peak_ipl as ids_ipl
+import ids_peak_ipl.ids_peak_ipl as ids_peak_ipl
+
 
 from PIL import Image
 import numpy as np
@@ -62,9 +63,8 @@ class IDS(CameraABC):
         self.datastream = None
         self.remote_node_map = None
         self.has_zero_minimum = False
+        self._supports_trigger_burst = False
         
-        
-        self.__has_callback = None
         self._live_thread = None
         self._live_worker = None
         self._live_thread = qtc.QThread()     
@@ -198,14 +198,14 @@ class IDS(CameraABC):
         running: bool
             True if the camera firmware is currently acquiring or
             processing images, False otherwise.
-        """ 
-        return True
-        #SensorState according to: https://www.1stvision.com/cameras/IDS/IDS-manuals/en/sensor-state.html  -> only available uEye+: GV and U3 cameras     
-        #sensor_state = self.remote_node_map.FindNode("SensorState").CurrentEntry().SymbolicValue()
-        
+        """
         if self.datastream is None:
             return False
-        
+        else:
+            return True
+        #SensorState according to: https://www.1stvision.com/cameras/IDS/IDS-manuals/en/sensor-state.html  -> only available uEye+: GV and U3 cameras     
+        #sensor_state = self.remote_node_map.FindNode("SensorState").CurrentEntry().SymbolicValue()
+               
 
 
 
@@ -220,12 +220,8 @@ class IDS(CameraABC):
             frames, i.e., only one 'trigger_now()' call is necessary to
             deliver all the frames needed.
         """
-        try:
-            self.remote_node_map.TryFindNode("AcquisitionMode").SetCurrentEntry("MultiFrame")
-            return True
-        except Exception as e:
-            print("EXCEPTION: " + str(e))
-            return False
+        return self._supports_trigger_burst
+
 
     def check_loaded_settings(self):
         """IDS Cameras exposure and gain values are discrete. 
@@ -238,8 +234,10 @@ class IDS(CameraABC):
             are the same.
 
         """
-
-        real_exposure = self.remote_node_map.FindNode("ExposureTime").Value()
+        print(self.remote_node_map.FindNode("ExposureTime").Value())
+        print("exposureTime min: " f"{self.remote_node_map.FindNode("ExposureTime").Minimum()} " f"{self.remote_node_map.FindNode("ExposureTime").Unit()}")
+        print("exposureTime max: " f"{self.remote_node_map.FindNode("ExposureTime").Maximum()} " f"{self.remote_node_map.FindNode("ExposureTime").Unit()}")
+        real_exposure = self.remote_node_map.FindNode("ExposureTime").Value() / 1000
         expected_exposure = self.settings.getfloat('measurement_settings','exposure')
 
         real_gain = self.remote_node_map.FindNode("Gain").Value()
@@ -405,8 +403,16 @@ class IDS(CameraABC):
                 if self.remote_node_map is None:
                     self.remote_node_map = self.device.RemoteDevice().NodeMaps()[0]
                 if self.datastream is None:
-                    self.datastream = self.device.DataStreams()[0].OpenDataStream()                                
+                    self.datastream = self.device.DataStreams()[0].OpenDataStream()
 
+                if not self._supports_trigger_burst:                               
+                    try:
+                        self.remote_node_map.TryFindNode("AcquisitionMode").SetCurrentEntry("MultiFrame")
+
+                        self._supports_trigger_burst = True
+                    except Exception as e:
+                        print("EXCEPTION: " + str(e))
+                        self._supports_trigger_burst = False
                 
                 self.set_roi(no_roi=True)
                 #set the pixelformat for used ids cameras to  monochrome 12 bit, default is monochrome 8 bit
@@ -446,7 +452,7 @@ class IDS(CameraABC):
     def get_exposure(self):
         """Return the exposure time in milliseconds set in the camera."""
         #https://www.1stvision.com/cameras/IDS/IDS-manuals/en/exposure-time.html
-        return self.remote_node_map.FindNode("ExposureTime").Value()
+        return self.remote_node_map.FindNode("ExposureTime").Value() / 1000
 
     def set_exposure(self):
         """Set the exposure time."""
@@ -454,7 +460,7 @@ class IDS(CameraABC):
         if self.remote_node_map is None:
             raise RuntimeError("set_exposure, remotenodemap none") 
         else:
-            self.remote_node_map.FindNode("ExposureTime").SetValue(self.exposure)
+            self.remote_node_map.FindNode("ExposureTime").SetValue(self.exposure * 1000)
 
     def get_exposure_limits(self): 
         """Return the minimum and maximum exposure time supported.
@@ -468,7 +474,7 @@ class IDS(CameraABC):
             return 35,30000
         else:
             exposure_time = self.remote_node_map.FindNode("ExposureTime")       
-            return exposure_time.Minimum(), exposure_time.Maximum()
+            return exposure_time.Minimum() / 1000, exposure_time.Maximum() / 1000
 
     def get_frame_rate(self):
         """Return the number of frames delivered per second
@@ -542,8 +548,10 @@ class IDS(CameraABC):
         """Set the camera mode"""
         if self.mode == "triggered" and self.device is not None:
             self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("SingleFrame")
+            self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(1)
         else:
             self.remote_node_map.FindNode("TriggerMode").SetCurrentEntry("Off")
+
             self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("Continuous") 
 
     def get_n_frames(self):
@@ -678,8 +686,9 @@ class IDS(CameraABC):
 
         if self.mode == "triggered":
             print(f"start() , self.mode = {self.mode}")
+            
             self.revoke_buffer()
-            self.alloc_buffer()
+            
             self.n_frames_done = 0  
             self.init_software_trigger()
                      
@@ -711,9 +720,7 @@ class IDS(CameraABC):
             return False
         self.remote_node_map.FindNode("AcquisitionStop").Execute()
 
-        #stop and flush the datastream
-        if self.datastream.IsGrabbing():
-            self.datastream.StopAcquisition(ids_peak.AcquisitionStopMode_Kill)
+
         #revoke all buffers ( Discard all buffers from the acquisition engine, because they remain in the announced buffer pool.)
         self.revoke_buffer()
 
@@ -750,6 +757,10 @@ class IDS(CameraABC):
         """
         self.busy = True
         print("trigger_now startet")
+        self.revoke_buffer()
+        self.alloc_buffer()
+        print(self.remote_node_map.FindNode("ExposureTime").Value())
+        
         if not super().trigger_now():
             return False
 
@@ -760,16 +771,21 @@ class IDS(CameraABC):
         self.remote_node_map.FindNode("TLParamsLocked").SetValue(1)
         self.remote_node_map.FindNode("AcquisitionStart").Execute()
         #Check if the command has finished before you continue (optional)
-        self.remote_node_map.FindNode("AcquisitionStart").WaitUntilDone()
+        # self.remote_node_map.FindNode("AcquisitionStart").WaitUntilDone()
 
         #image trigger
         self.remote_node_map.FindNode("TriggerSoftware").Execute()
         self.remote_node_map.FindNode("TriggerSoftware").WaitUntilDone()
 
-        buffer = self.datastream.WaitForFinishedBuffer(50000) #5000ms timeout is used in ids cameras example code
+        print(self.datastream.NumBuffersQueued())
+        buffer = self.datastream.WaitForFinishedBuffer(30000) #10000ms timeout is used in ids cameras example code
+        print(self.datastream.NumBuffersQueued())
+        
         self._buff_to_numpy(buffer)
         self.datastream.QueueBuffer(buffer)
 
+        self.remote_node_map.FindNode("AcquisitionStop").Execute()
+        self.remote_node_map.FindNode("AcquisitionStop").WaitUntilDone()
 
         self.remote_node_map.FindNode("TLParamsLocked").SetValue(0)
         self.datastream.StopAcquisition()
@@ -813,25 +829,21 @@ class IDS(CameraABC):
 
         Emits image.copy()
         """
-        print("self._buff_to_numpy startet")
-        raw_image = ids_ipl_extension.BufferToImage(buffer)
 
+        raw_image = ids_ipl_extension.BufferToImage(buffer)
+        
+        print(raw_image.PixelFormat().Name())   
+        # image_mono16 = raw_image.ConvertTo(ids_peak_ipl.PixelFormatName_Mono16)
+        
         image = raw_image.get_numpy_2D_16().byteswap(True)
-        self.frame_ready.emit(image)
-        # return raw_image.get_numpy_2D_16().byteswap(True).copy()
-    
-        # try:
-        #     raw_image = ids_ipl_extension.BufferToImage(buffer)
-        #     #image = Image.fromarray(raw_image)
-        #     return raw_image.get_numpy_2D_16().byteswap(True)
-        # except Exception as e:
-        #     print("EXCEPTION: " + str(e))
-        #     return None  
+        
+        self.frame_ready.emit(image) 
 
     def init_software_trigger(self):
         """Initialize the software Trigger.
         Sets the TriggerSelector to ExposureStart, the TriggerMode to On and the TriggerSource to Software.
         """
+        
         self.remote_node_map.FindNode("TriggerSelector").SetCurrentEntry("ExposureStart")
         self.remote_node_map.FindNode("TriggerMode").SetCurrentEntry("On")
         self.remote_node_map.FindNode("TriggerSource").SetCurrentEntry("Software")
@@ -858,7 +870,11 @@ class IDS(CameraABC):
         
         if self.device is None:
             raise RuntimeError
-        
+
+        #stop and flush the datastream
+        if self.datastream.IsGrabbing():
+            self.datastream.StopAcquisition(ids_peak.AcquisitionStopMode_Kill)
+            
         # Remove buffers from any associated queue
         self.datastream.Flush(ids_peak.DataStreamFlushMode_DiscardAll)
 
