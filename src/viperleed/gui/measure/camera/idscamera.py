@@ -1,7 +1,8 @@
 import ids_peak.ids_peak as ids_peak
 import ids_peak.ids_peak_ipl_extension as ids_ipl_extension
 import ids_peak_ipl.ids_peak_ipl as ids_peak_ipl
-
+import ids_peak_ipl
+import ctypes
 
 from PIL import Image
 import numpy as np
@@ -16,9 +17,9 @@ class LiveWorker(qtc.QObject):
     """Worker thread for live mode."""
     frame_ready = qtc.pyqtSignal(np.ndarray)
 
-    def __init__(self, device, datastream):
+    def __init__(self, camera, datastream):
         super().__init__()
-        self.device = device
+        self.camera = camera
         self.datastream = datastream
         self._running = False
 
@@ -29,13 +30,11 @@ class LiveWorker(qtc.QObject):
         
         while self._running:
             try:
-                buffer = self.datastream.WaitForFinishedBuffer(500)
+                buffer = self.datastream.WaitForFinishedBuffer(1500)
                 if buffer.HasImage():
-                    image_np = self.device._buff_to_numpy(buffer)
+                    image_np = self.camera._process_ids_mono12_buffer(buffer) <<4
                     if image_np is not None:
                         self.frame_ready.emit(image_np)    
-            except:
-                continue
             finally:
                 self.datastream.QueueBuffer(buffer)
 
@@ -252,6 +251,7 @@ class IDS(CameraABC):
             # print(f"check_loaded_settings startet: {expected_gain} != {real_gain}")
             self.settings.set('measurement_settings', 'gain', str(real_gain))
         
+        
         self.settings.update_file()
 
         return super().check_loaded_settings()
@@ -417,7 +417,7 @@ class IDS(CameraABC):
                 self.set_roi(no_roi=True)
                 #set the pixelformat for used ids cameras to  monochrome 12 bit, default is monochrome 8 bit
                 self.remote_node_map.FindNode("PixelFormat").SetCurrentEntry("Mono12")
-                # self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(1)
+                
                 self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("SingleFrame")
                 # self._pixel_format = self.remote_node_map.FindNode("PixelFormat").CurrentEntry().SymbolicValue() 
                 self.set_roi()
@@ -460,6 +460,26 @@ class IDS(CameraABC):
         if self.remote_node_map is None:
             raise RuntimeError("set_exposure, remotenodemap none") 
         else:
+            max_exposure = self.remote_node_map.FindNode("ExposureTime").Maximum()
+            print(f"max_exposure: {max_exposure}")
+            print(f"Frame rate bei maximaler ExposureTime: {1/(max_exposure/10**6)}")
+            print(f"Exposure Wert laut ViPErLEED: {self.exposure}")
+            print(f"Exposure Wert laut ViPErLEED in s: {self.exposure / 1000}")
+            new_frame_rate = 1/ ( self.exposure / 1000)
+            max_frame_rate = self.remote_node_map.FindNode("AcquisitionFrameRate").Maximum()
+            min_frame_rate = self.remote_node_map.FindNode("AcquisitionFrameRate").Minimum()
+            
+            print(f"Frame Rate nach 1 / (self.exposure/1000): {new_frame_rate}")
+            if new_frame_rate >= 1.0101088409953078:
+                print("Min Frame Rate")
+                new_frame_rate = min_frame_rate
+            if min_frame_rate <= new_frame_rate < max_frame_rate:
+                self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(new_frame_rate)
+            else:
+                if new_frame_rate <= max_frame_rate:
+                    print("Max Frame Rate")
+                    self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(max_frame_rate)
+
             self.remote_node_map.FindNode("ExposureTime").SetValue(self.exposure * 1000)
 
     def get_exposure_limits(self): 
@@ -473,8 +493,13 @@ class IDS(CameraABC):
         if self.remote_node_map is None:
             return 0 , np.inf
         else:
-            exposure_time = self.remote_node_map.FindNode("ExposureTime")       
-            return exposure_time.Minimum() / 1000, exposure_time.Maximum() / 1000
+            self._starting_frame_rate = self.remote_node_map.FindNode("AcquisitionFrameRate").Value()
+            self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(1)
+            node_exposure_time = self.remote_node_map.FindNode("ExposureTime")
+            min_exposure_time = node_exposure_time.Minimum() / 1000
+            max_exposure_time = node_exposure_time.Maximum() / 1000
+            self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(self._starting_frame_rate)
+            return min_exposure_time, max_exposure_time
 
     def get_frame_rate(self):
         """Return the number of frames delivered per second
@@ -678,36 +703,34 @@ class IDS(CameraABC):
         Returns
         -------
         None.
-        """
-        print("start(self,*) beginnt")
-        
+        """        
         super().start()
 
-
-        if self.mode == "triggered":
-            print(f"start() , self.mode = {self.mode}")
-            
+        if self.mode == "triggered":            
             self.revoke_buffer()
             self.alloc_buffer()            
             self.n_frames_done = 0  
             self.init_software_trigger()
             self.datastream.StartAcquisition()
 
-            
+        elif self.mode == "live":
+            self.revoke_buffer()
+            self.alloc_buffer()
 
-        # if self.mode == "live":
-        #     self.alloc_buffer()
-        #     print(f"start() , self.mode = {self.mode}")
-        #     self.remote_node_map.FindNode("TLParamsLocked").SetValue(1)
-        #     self.datastream.StartAcquisition()
-        #     self.remote_node_map.FindNode("AcquisitionStart").Execute()
-            
-        #     self._live_worker = LiveWorker(self.device, self.datastream)
-        #     self._live_worker.moveToThread(self._live_thread)
-        #     self._live_thread.started.connect(self._live_worker.run)
-        #     self._live_worker.frame_ready.connect(self.frame_ready.emit)
-            
-        #     self._live_thread.start()                    
+            self.remote_node_map.FindNode("TriggerMode").SetCurrentEntry("Off")
+            self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("Continuous")
+            self.remote_node_map.FindNode("TLParamsLocked").SetValue(1)
+
+            self.datastream.StartAcquisition()
+            self.remote_node_map.FindNode("AcquisitionStart").Execute()
+
+            self._live_thread = qtc.QThread()
+            self._live_worker = LiveWorker(self,self.datastream)
+            self._live_worker.moveToThread(self._live_thread)
+
+            self._live_thread.started.connect(self._live_worker.run)
+            self._live_worker.frame_ready.connect(self.frame_ready.emit)
+            self._live_thread.start()                
         
         self.started.emit()
 
@@ -717,11 +740,21 @@ class IDS(CameraABC):
         if not super().stop():
             # No need to stop, or cannot stop yet
             return False
+
+        try:
+            if self._live_worker is not None:
+                self._live_worker.stop()
+            if self._live_thread is not None:
+                self._live_thread.quit()
+                self._live_thread.wait()
+                self._live_thread = None
+                self._live_worker = None
+        except Exception as e:
+            print("EXCEPTION: stop thread - " + str(e))
+        
         #stop acquisition on camera
         if self.remote_node_map is None:
             return False
-
-
         
         self.remote_node_map.FindNode("AcquisitionStop").Execute()
 
@@ -730,20 +763,6 @@ class IDS(CameraABC):
 
         #revoke all buffers ( Discard all buffers from the acquisition engine, because they remain in the announced buffer pool.)
         self.revoke_buffer()
-
-        # #threading
-        # try:
-        #     print("stop1")
-        #     #stop thread
-        #     if self._live_worker is not None:
-        #         self._live_worker.stop()
-        #     if self._live_thread is not None:
-        #         self._live_thread.quit()
-        #         self._live_thread.wait()
-        #         self._live_thread = None
-        #         self._live_worker = None
-        # except Exception as e:
-        #     print("EXCEPTION: stop()" + str(e))
 
         self.stopped.emit()
         return True
@@ -762,7 +781,6 @@ class IDS(CameraABC):
         -----
         error_occurred(CameraErrors.UNSUPPORTED_OPERATION)
         """
-        # self.busy = True
         print("trigger_now startet")
 
         print(self.remote_node_map.FindNode("ExposureTime").Value())
@@ -782,10 +800,11 @@ class IDS(CameraABC):
         self.remote_node_map.FindNode("TriggerSoftware").WaitUntilDone()
 
         print(self.datastream.NumBuffersQueued())
-        buffer = self.datastream.WaitForFinishedBuffer(30000) #30000ms timeout
+        buffer = self.datastream.WaitForFinishedBuffer(ids_peak.Timeout.INFINITE_TIMEOUT)
         print(self.datastream.NumBuffersQueued())
-        # 
-        self._buff_to_numpy(buffer)
+
+        extracted_image = self._process_ids_mono12_buffer(buffer) <<4
+        self.frame_ready.emit(extracted_image.copy())
         
         self.datastream.QueueBuffer(buffer)
 
@@ -793,33 +812,28 @@ class IDS(CameraABC):
         self.remote_node_map.FindNode("AcquisitionStop").WaitUntilDone()
 
         self.remote_node_map.FindNode("TLParamsLocked").SetValue(0)
-        
-
         return True
 
-    def _buff_to_numpy(self, buffer): 
-        """Convert buffer to numpy array and emit frame_ready signal.
+    def _process_ids_mono12_buffer(self,buffer):
+        """Converts buffer(Mono12) to a Mono16 image.
 
         Parameter
-        ------
+        --------
         buffer: The buffer containing the acquired frame
-
-        Emits image.copy()
+        --------
+        Emits
+        image_2d: Mono16
         """
+        width = buffer.Width()
+        height = buffer.Height()
+        size = buffer.Size()
+        ptr_address = int(buffer.BasePtr())
+        buffer_bytes = ctypes.string_at(ptr_address,size)
 
-        raw_image = ids_ipl_extension.BufferToImage(buffer)
+        raw_data = np.frombuffer(buffer_bytes,dtype='<u2')
+        image_2d = raw_data.reshape((height, width))
 
-        #Big Questions regarding the conversion of Mono12 to Mono16 
-        print(raw_image.PixelFormat().Name())
-        
-        image_mono16 = raw_image.ConvertTo(ids_peak_ipl.PixelFormatName_Mono16)
-        image = image_mono16.get_numpy_2D_16()
-        # image_numpy = raw_image.get_numpy_2D_16()
-
-        # image = image_numpy << 4
-        
-        #
-        self.frame_ready.emit(image) 
+        return image_2d
 
     def init_software_trigger(self):
         """Initialize the software Trigger.
