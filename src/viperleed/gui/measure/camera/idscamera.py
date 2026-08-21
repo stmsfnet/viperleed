@@ -262,7 +262,7 @@ class IDS(CameraABC):
         by either going out-of-scope or by explicitly overwriting the variable.' """
         
 
-        if self.device is not None:
+        if self.device is not None or self.datastream is not None or self.remote_node_map is not None:
             self.stop()
             self.datastream = None
             self.remote_node_map = None
@@ -417,7 +417,7 @@ class IDS(CameraABC):
                 self.set_roi(no_roi=True)
                 #set the pixelformat for used ids cameras to  monochrome 12 bit, default is monochrome 8 bit
                 self.remote_node_map.FindNode("PixelFormat").SetCurrentEntry("Mono12")
-                
+                # self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(1)
                 self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("SingleFrame")
                 # self._pixel_format = self.remote_node_map.FindNode("PixelFormat").CurrentEntry().SymbolicValue() 
                 self.set_roi()
@@ -471,7 +471,7 @@ class IDS(CameraABC):
             Shortest and longest exposure times in milliseconds
         """
         if self.remote_node_map is None:
-            return 35,30000
+            return 0 , np.inf
         else:
             exposure_time = self.remote_node_map.FindNode("ExposureTime")       
             return exposure_time.Minimum() / 1000, exposure_time.Maximum() / 1000
@@ -485,7 +485,7 @@ class IDS(CameraABC):
             Number of frames delivered per second.                
         """
         if self.remote_node_map is None:
-            return 30.5
+            return 25.0
         else:
             return self.remote_node_map.FindNode("AcquisitionFrameRate").Value() 
 
@@ -548,7 +548,7 @@ class IDS(CameraABC):
         """Set the camera mode"""
         if self.mode == "triggered" and self.device is not None:
             self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("SingleFrame")
-            self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(1)
+            
         else:
             self.remote_node_map.FindNode("TriggerMode").SetCurrentEntry("Off")
 
@@ -688,10 +688,12 @@ class IDS(CameraABC):
             print(f"start() , self.mode = {self.mode}")
             
             self.revoke_buffer()
-            
+            self.alloc_buffer()            
             self.n_frames_done = 0  
             self.init_software_trigger()
-                     
+            self.datastream.StartAcquisition()
+
+            
 
         # if self.mode == "live":
         #     self.alloc_buffer()
@@ -718,8 +720,13 @@ class IDS(CameraABC):
         #stop acquisition on camera
         if self.remote_node_map is None:
             return False
+
+
+        
         self.remote_node_map.FindNode("AcquisitionStop").Execute()
 
+        if self.datastream.IsGrabbing():
+            self.datastream.StopAcquisition()
 
         #revoke all buffers ( Discard all buffers from the acquisition engine, because they remain in the announced buffer pool.)
         self.revoke_buffer()
@@ -755,18 +762,15 @@ class IDS(CameraABC):
         -----
         error_occurred(CameraErrors.UNSUPPORTED_OPERATION)
         """
-        self.busy = True
+        # self.busy = True
         print("trigger_now startet")
-        self.revoke_buffer()
-        self.alloc_buffer()
+
         print(self.remote_node_map.FindNode("ExposureTime").Value())
         
         if not super().trigger_now():
             return False
 
-        self.datastream.StartAcquisition()   
-    
-            
+       
         #Lock writable nodes, which could influence the payload size during acquisition.
         self.remote_node_map.FindNode("TLParamsLocked").SetValue(1)
         self.remote_node_map.FindNode("AcquisitionStart").Execute()
@@ -778,47 +782,20 @@ class IDS(CameraABC):
         self.remote_node_map.FindNode("TriggerSoftware").WaitUntilDone()
 
         print(self.datastream.NumBuffersQueued())
-        buffer = self.datastream.WaitForFinishedBuffer(30000) #10000ms timeout is used in ids cameras example code
+        buffer = self.datastream.WaitForFinishedBuffer(30000) #30000ms timeout
         print(self.datastream.NumBuffersQueued())
-        
+        # 
         self._buff_to_numpy(buffer)
+        
         self.datastream.QueueBuffer(buffer)
 
         self.remote_node_map.FindNode("AcquisitionStop").Execute()
         self.remote_node_map.FindNode("AcquisitionStop").WaitUntilDone()
 
         self.remote_node_map.FindNode("TLParamsLocked").SetValue(0)
-        self.datastream.StopAcquisition()
+        
 
         return True
-        # if buffer.HasImage():
-        #     captured_image = self._buff_to_numpy(buffer)
-        #     self.frame_ready.emit(captured_image)
-        
-        # except:
-        #     pass
-        # finally:
-        #     if buffer is not None:
-        #         try:
-        #             self.datastream.QueueBuffer(buffer)
-        #         except Exception as e:
-        #             print("EXCEPTION: " + str(e))
-        #     try:
-        #         #Unlock writable nodes, which could influence the payload size during acquisition.
-        #         self.remote_node_map.FindNode("TLParamsLocked").SetValue(0)
-
-        #         self.remote_node_map.FindNode("AcquisitionStop").Execute()
-        #         #Check if the command has finished before you continue (optional)
-        #         self.remote_node_map.FindNode("AcquisitionStop").WaitUntilDone()
-
-        #         if self.datastream.IsGrabbing():
-        #             self.datastream.StopAcquisition(ids_peak.AcquisitionStopMode_Kill)
-        #     except Exception as e:
-        #         print("EXCEPTION: " + str(e))
-        #         return False
-            # self.busy = False
-            # return True
-
 
     def _buff_to_numpy(self, buffer): 
         """Convert buffer to numpy array and emit frame_ready signal.
@@ -831,12 +808,17 @@ class IDS(CameraABC):
         """
 
         raw_image = ids_ipl_extension.BufferToImage(buffer)
+
+        #Big Questions regarding the conversion of Mono12 to Mono16 
+        print(raw_image.PixelFormat().Name())
         
-        print(raw_image.PixelFormat().Name())   
-        # image_mono16 = raw_image.ConvertTo(ids_peak_ipl.PixelFormatName_Mono16)
+        image_mono16 = raw_image.ConvertTo(ids_peak_ipl.PixelFormatName_Mono16)
+        image = image_mono16.get_numpy_2D_16()
+        # image_numpy = raw_image.get_numpy_2D_16()
+
+        # image = image_numpy << 4
         
-        image = raw_image.get_numpy_2D_16().byteswap(True)
-        
+        #
         self.frame_ready.emit(image) 
 
     def init_software_trigger(self):
@@ -851,15 +833,19 @@ class IDS(CameraABC):
 
     def alloc_buffer(self):
         """Allocates the buffer, needed for start()"""
-        if self.device is None:
-            raise RuntimeError
+        if self.remote_node_map is None:
+            raise RuntimeError("This RunTimeError is one time only, after restart of ViPErLEED this shouldn't be a problem!")
             
         #Buffer size
         payload_size = self.remote_node_map.FindNode("PayloadSize").Value()
 
         #Number of minimum required buffers
-        self.num_buffers_min_required = self.datastream.NumBuffersAnnouncedMinRequired()
+        if self.datastream.NumBuffersAnnouncedMinRequired() >=3:
+            self.num_buffers_min_required = self.datastream.NumBuffersAnnouncedMinRequired()
+        else:
+            self.num_buffers_min_required = 3
 
+        
         #Allocate buffers
         for _ in range(self.num_buffers_min_required):
             buffer = self.datastream.AllocAndAnnounceBuffer(payload_size)
@@ -868,8 +854,8 @@ class IDS(CameraABC):
     def revoke_buffer(self):
         """Revokes the buffer, needed for stop()"""
         
-        if self.device is None:
-            raise RuntimeError
+        if self.remote_node_map is None:
+            raise RuntimeError("This RunTimeError is one time only, after restart of ViPErLEED this shouldn't be a problem!")
 
         #stop and flush the datastream
         if self.datastream.IsGrabbing():
