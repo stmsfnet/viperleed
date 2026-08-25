@@ -12,6 +12,12 @@ from PyQt5 import QtCore as qtc
 from viperleed.gui.measure.camera.abc import CameraABC
 from viperleed.gui.measure.classes.abc import SettingsInfo
 from viperleed.gui.measure import hardwarebase as base
+from viperleed.gui.measure.classes.abc import QObjectSettingsErrors
+from viperleed.gui.measure.dialogs.settingsdialog import SettingsHandler
+from viperleed.gui.measure.dialogs.settingsdialog import SettingsTag
+from viperleed.gui.measure.widgets.mappedcombobox import MappedComboBox
+from viperleed.gui.measure.widgets.spinboxes import CoercingSpinBox
+
 
 class LiveWorker(qtc.QObject):
     """Worker thread for live mode."""
@@ -53,8 +59,7 @@ class IDS(CameraABC):
         )  
     def __init__(self, *args, settings=None, parent=None, **kwargs):
         """Initialize instance."""
-        #self.hardware_supported_features.extend(['roi', 'black_level', 'color_format']) #TODO: IDS camera hardware support roi, black_level and color_format (get_[name] and set_[name] methods need to be implemented)
-        self.hardware_supported_features.extend(['roi'])
+        self.hardware_supported_features.extend(['roi', 'black_level'])
         #initialize the ids_peak library
         ids_peak.Library.Initialize()            
     
@@ -63,6 +68,7 @@ class IDS(CameraABC):
         self.remote_node_map = None
         self.has_zero_minimum = False
         self._supports_trigger_burst = False
+        self.__black_level = -1
         
         self._live_thread = None
         self._live_worker = None
@@ -205,6 +211,44 @@ class IDS(CameraABC):
         #SensorState according to: https://www.1stvision.com/cameras/IDS/IDS-manuals/en/sensor-state.html  -> only available uEye+: GV and U3 cameras     
         #sensor_state = self.remote_node_map.FindNode("SensorState").CurrentEntry().SymbolicValue()
                
+    @property
+    def black_level(self):
+        """Return the black-level setting of the camera.
+
+        The black level is a measure of a minimum photon intensity
+        at pixels. Pixels illuminated with less than this intensity
+        will appear in images as having self.intensity_limits[0]
+        intensity. Therefore, black_level determines the lower limit
+        at which image-intensity histograms are 'cut'.
+        """
+        try:
+            black_level = self.settings.getint('camera_settings',
+                                               'black_level', fallback=-2)
+        except (TypeError, ValueError):
+            black_level = -2
+
+        if black_level == self.__black_level:
+            return black_level
+
+        if black_level <= -2:
+            # Was not present. Let's read it from the camera
+            # and store it in the settings.
+            black_level = self.get_black_level()
+            self.settings.set('camera_settings', 'black_level',
+                              str(black_level))
+            self.settings.update_file()
+
+        _min, _max = self.get_black_level_limits()
+        if black_level < _min or black_level > _max:
+            self.emit_error(
+                QObjectSettingsErrors.INVALID_SETTINGS,
+                'camera_settings/black_level',
+                f"{black_level} [out of range ({_min}, {_max})]",
+                )
+            return -2
+
+        self.__black_level = black_level
+        return black_level
 
 
 
@@ -353,7 +397,51 @@ class IDS(CameraABC):
         camera_class = config.get('camera_settings', 'class_name',
                                   fallback=None)
         return cls.__name__ == camera_class
-    
+
+
+    def get_settings_handler(self):
+        """Return a SettingsHandler object for displaying settings.
+
+        Adds:
+        - 'camera_settings'/'black_level' (advanced)
+
+        Returns
+        -------
+        handler : SettingsHandler
+            The handler used in a SettingsDialog to display the
+            settings of this controller to users.
+        """
+        base_handler = super().get_settings_handler()
+        handler = SettingsHandler(self.settings, show_path_to_config=True)
+        handler.add_from_handler(base_handler)
+
+        # pylint: disable=redefined-variable-type
+        # Triggered for _widget. While this is true, it is clear what
+        # _widget is used for in each portion of filling the handler
+
+        if not self.connected:
+            return handler
+
+        # Black level
+        _widget = CoercingSpinBox(soft_range=self.get_black_level_limits())
+        _widget.setMinimum(0)
+        _widget.setAccelerated(True)
+        _tip = (
+            "<nobr>Dark Level, Black Level, or Brightness is a measure of"
+            "</nobr> minimum photon intensity at pixels. Pixels illuminated "
+            "with less than this intensity will appear in images as "
+            f"having minimum intensity (= {self.intensity_limits[0]}). "
+            "Therefore, it determines the lower limit at which image-"
+            "intensity histograms are 'cut'. The dark level is <b>optimized "
+            "automatically</b> before bad pixels are identified with "
+            "<b>Tools->Find bad pixels...</b>"
+            )
+        handler.add_option('camera_settings', 'black_level',
+                           handler_widget=_widget, tooltip=_tip,
+                           tags=SettingsTag.ADVANCED,
+                           display_name="Dark Level")
+        return handler
+
     def list_devices(self):
         """Return a list of available devices.
         
@@ -381,9 +469,6 @@ class IDS(CameraABC):
         successful : bool
             True if the device was opened successfully.                     
         """
-
-        #self.name to check if this works
-        #self.name = "IDS UI326xCP-M (IDS/UI326xCP-M/4103712875-0)"
 
         ids_peak.Library.Initialize()
         self.device_manager = ids_peak.DeviceManager.Instance()
@@ -417,16 +502,31 @@ class IDS(CameraABC):
                 self.set_roi(no_roi=True)
                 #set the pixelformat for used ids cameras to  monochrome 12 bit, default is monochrome 8 bit
                 self.remote_node_map.FindNode("PixelFormat").SetCurrentEntry("Mono12")
-                print(f"BlackLevel: {self.remote_node_map.FindNode("BlackLevel").Value()}")
-                print(f"BlackLevel Minimum: {self.remote_node_map.FindNode("BlackLevel").Minimum()}")
-                print(f"BlackLevel Maximum: {self.remote_node_map.FindNode("BlackLevel").Maximum()}")
                 self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("SingleFrame")
-                # self._pixel_format = self.remote_node_map.FindNode("PixelFormat").CurrentEntry().SymbolicValue() 
                 self.set_roi()
-
                 return True
         else:
             return True
+
+    @qtc.pyqtSlot()
+    def get_black_level(self):
+        """Return the black level currently set in the camera."""
+        return self.remote_node_map.FindNode("BlackLevel").Value()
+
+    @qtc.pyqtSlot()
+    def set_black_level(self):
+        """Set the black level in the camera from settings."""
+        _level = self.black_level
+        if _level <0:
+            return
+        self.remote_node_map.FindNode("BlackLevel").SetValue(_level)
+
+
+    def get_black_level_limits(self):
+        """Return minimum and maximum values for the black level."""
+        _black_level_node = self.remote_node_map.FindNode("BlackLevel")
+        return _black_level_node.Minimum(), _black_level_node.Maximum()
+
 
     def get_binning(self): #TODO: Reactivate binning function and implement set_binning: File "/home/aop2diplom/viperleed-git/src/viperleed/gui/measure/camera/abc.py", line 1073, in set_binning raise NotImplementedError(NotImplementedError: IDS natively supports binning, but self.set_binning() was not overridden.
 
@@ -857,7 +957,6 @@ class IDS(CameraABC):
         else:
             self.num_buffers_min_required = 3
 
-        
         #Allocate buffers
         for _ in range(self.num_buffers_min_required):
             buffer = self.datastream.AllocAndAnnounceBuffer(payload_size)
@@ -865,9 +964,10 @@ class IDS(CameraABC):
         
     def revoke_buffer(self):
         """Revokes the buffer, needed for stop()"""
-            
-        # if self.datastream is None:
-        #     raise RuntimeError("This RunTimeError is one time only, after restart of ViPErLEED this shouldn't be a problem!")
+        
+        if self.datastream is None:
+            self.datastream = self.device.DataStreams()[0].OpenDataStream()
+            # raise RuntimeError("This RunTimeError is one time only, after restart of ViPErLEED this shouldn't be a problem!")
 
         #stop and flush the datastream
         if self.datastream.IsGrabbing():
