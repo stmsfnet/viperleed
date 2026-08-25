@@ -480,15 +480,13 @@ class IDS(CameraABC):
                     if name.DisplayName() == self.name:
                         self.device = self.device_manager.Devices()[i].OpenDevice(ids_peak.DeviceAccessType_Control)
             except Exception as e:
-                print("EXCEPTION: open()" + str(e))            
+                print("EXCEPTION: open()" + str(e))          
             finally:
                 # print(self.device.DisplayName())
                 if self.device is None:
                     return False
-                if self.remote_node_map is None:
-                    self.remote_node_map = self.device.RemoteDevice().NodeMaps()[0]
-                if self.datastream is None:
-                    self.datastream = self.device.DataStreams()[0].OpenDataStream()
+                self.remote_node_map = self.device.RemoteDevice().NodeMaps()[0]
+                self.datastream = self.device.DataStreams()[0].OpenDataStream()
 
                 if not self._supports_trigger_burst:                               
                     try:
@@ -503,6 +501,14 @@ class IDS(CameraABC):
                 #set the pixelformat for used ids cameras to  monochrome 12 bit, default is monochrome 8 bit
                 self.remote_node_map.FindNode("PixelFormat").SetCurrentEntry("Mono12")
                 self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("SingleFrame")
+
+                #LongExposure according to ids_peak manual
+                # self.remote_node_map.FindNode("UserSetSelector").SetCurrentEntry("LongExposure")
+                # self.remote_node_map.FindNode("UserSetLoad").Execute()
+
+
+
+
                 self.set_roi()
                 return True
         else:
@@ -965,8 +971,7 @@ class IDS(CameraABC):
     def revoke_buffer(self):
         """Revokes the buffer, needed for stop()"""
         
-        if self.datastream is None:
-            self.datastream = self.device.DataStreams()[0].OpenDataStream()
+        # if self.datastream is None:
             # raise RuntimeError("This RunTimeError is one time only, after restart of ViPErLEED this shouldn't be a problem!")
 
         #stop and flush the datastream
