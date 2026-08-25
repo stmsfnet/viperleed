@@ -32,7 +32,7 @@ class LiveWorker(qtc.QObject):
             try:
                 buffer = self.datastream.WaitForFinishedBuffer(1500)
                 if buffer.HasImage():
-                    image_np = self.camera._process_ids_mono12_buffer(buffer) <<4
+                    image_np = self.camera._process_ids_mono12_buffer(buffer) 
                     if image_np is not None:
                         self.frame_ready.emit(image_np)    
             finally:
@@ -417,7 +417,9 @@ class IDS(CameraABC):
                 self.set_roi(no_roi=True)
                 #set the pixelformat for used ids cameras to  monochrome 12 bit, default is monochrome 8 bit
                 self.remote_node_map.FindNode("PixelFormat").SetCurrentEntry("Mono12")
-                
+                print(f"BlackLevel: {self.remote_node_map.FindNode("BlackLevel").Value()}")
+                print(f"BlackLevel Minimum: {self.remote_node_map.FindNode("BlackLevel").Minimum()}")
+                print(f"BlackLevel Maximum: {self.remote_node_map.FindNode("BlackLevel").Maximum()}")
                 self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("SingleFrame")
                 # self._pixel_format = self.remote_node_map.FindNode("PixelFormat").CurrentEntry().SymbolicValue() 
                 self.set_roi()
@@ -438,6 +440,7 @@ class IDS(CameraABC):
                 binning_factor = max(binning_vertical, binning_horizontal) 
                 Tested IDS Cameras only support a binning_factor of max. 2
         """ 
+        print("get binning startet")
         if self.remote_node_map is None:
             return None
         # binning_vertical = self.remote_node_map.FindNode("BinningVertical").Value()
@@ -461,24 +464,19 @@ class IDS(CameraABC):
             raise RuntimeError("set_exposure, remotenodemap none") 
         else:
             max_exposure = self.remote_node_map.FindNode("ExposureTime").Maximum()
-            print(f"max_exposure: {max_exposure}")
-            print(f"Frame rate bei maximaler ExposureTime: {1/(max_exposure/10**6)}")
-            print(f"Exposure Wert laut ViPErLEED: {self.exposure}")
-            print(f"Exposure Wert laut ViPErLEED in s: {self.exposure / 1000}")
             new_frame_rate = 1/ ( self.exposure / 1000)
             max_frame_rate = self.remote_node_map.FindNode("AcquisitionFrameRate").Maximum()
             min_frame_rate = self.remote_node_map.FindNode("AcquisitionFrameRate").Minimum()
-            
-            print(f"Frame Rate nach 1 / (self.exposure/1000): {new_frame_rate}")
-            if new_frame_rate >= 1.0101088409953078:
-                print("Min Frame Rate")
-                new_frame_rate = min_frame_rate
-            if min_frame_rate <= new_frame_rate < max_frame_rate:
-                self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(new_frame_rate)
+            if min_frame_rate <= new_frame_rate:
+                print(f"min_frame_rate <= new_frame_rate: {min_frame_rate <= new_frame_rate}")
+                self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(min_frame_rate)
+            elif new_frame_rate <= max_frame_rate:
+                print(f"new_frame_rate <= max_frame_rate: {new_frame_rate <= max_frame_rate}")
+                self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(max_frame_rate)
             else:
-                if new_frame_rate <= max_frame_rate:
-                    print("Max Frame Rate")
-                    self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(max_frame_rate)
+                print(f"new_frame_rate: {new_frame_rate}")
+                self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(new_frame_rate)
+
 
             self.remote_node_map.FindNode("ExposureTime").SetValue(self.exposure * 1000)
 
@@ -705,7 +703,7 @@ class IDS(CameraABC):
         None.
         """        
         super().start()
-
+        print(f"self.open is {self.open()}")
         if self.mode == "triggered":            
             self.revoke_buffer()
             self.alloc_buffer()            
@@ -803,7 +801,7 @@ class IDS(CameraABC):
         buffer = self.datastream.WaitForFinishedBuffer(ids_peak.Timeout.INFINITE_TIMEOUT)
         print(self.datastream.NumBuffersQueued())
 
-        extracted_image = self._process_ids_mono12_buffer(buffer) <<4
+        extracted_image = self._process_ids_mono12_buffer(buffer) 
         self.frame_ready.emit(extracted_image.copy())
         
         self.datastream.QueueBuffer(buffer)
@@ -833,7 +831,7 @@ class IDS(CameraABC):
         raw_data = np.frombuffer(buffer_bytes,dtype='<u2')
         image_2d = raw_data.reshape((height, width))
 
-        return image_2d
+        return image_2d <<4
 
     def init_software_trigger(self):
         """Initialize the software Trigger.
@@ -847,9 +845,9 @@ class IDS(CameraABC):
 
     def alloc_buffer(self):
         """Allocates the buffer, needed for start()"""
-        if self.remote_node_map is None:
-            raise RuntimeError("This RunTimeError is one time only, after restart of ViPErLEED this shouldn't be a problem!")
-            
+        # if self.remote_node_map is None:
+        #     raise RuntimeError("This RunTimeError is one time only, after restart of ViPErLEED this shouldn't be a problem!")
+        
         #Buffer size
         payload_size = self.remote_node_map.FindNode("PayloadSize").Value()
 
@@ -867,9 +865,9 @@ class IDS(CameraABC):
         
     def revoke_buffer(self):
         """Revokes the buffer, needed for stop()"""
-        
-        if self.remote_node_map is None:
-            raise RuntimeError("This RunTimeError is one time only, after restart of ViPErLEED this shouldn't be a problem!")
+            
+        # if self.datastream is None:
+        #     raise RuntimeError("This RunTimeError is one time only, after restart of ViPErLEED this shouldn't be a problem!")
 
         #stop and flush the datastream
         if self.datastream.IsGrabbing():
