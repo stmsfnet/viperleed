@@ -277,9 +277,6 @@ class IDS(CameraABC):
             are the same.
 
         """
-        print(self.remote_node_map.FindNode("ExposureTime").Value())
-        print("exposureTime min: " f"{self.remote_node_map.FindNode("ExposureTime").Minimum()} " f"{self.remote_node_map.FindNode("ExposureTime").Unit()}")
-        print("exposureTime max: " f"{self.remote_node_map.FindNode("ExposureTime").Maximum()} " f"{self.remote_node_map.FindNode("ExposureTime").Unit()}")
         real_exposure = self.remote_node_map.FindNode("ExposureTime").Value() / 1000
         expected_exposure = self.settings.getfloat('measurement_settings','exposure')
 
@@ -287,14 +284,9 @@ class IDS(CameraABC):
         expected_gain = self.settings.getfloat('measurement_settings','gain')
 
         if expected_exposure != real_exposure:
-            # print(f"check_loaded_settings startet: {expected_exposure} != {real_exposure}")
             self.settings.set('measurement_settings', 'exposure', str(real_exposure))
-
-
         if expected_gain != real_gain:
-            # print(f"check_loaded_settings startet: {expected_gain} != {real_gain}")
-            self.settings.set('measurement_settings', 'gain', str(real_gain))
-        
+            self.settings.set('measurement_settings', 'gain', str(real_gain))        
         
         self.settings.update_file()
 
@@ -482,7 +474,6 @@ class IDS(CameraABC):
             except Exception as e:
                 print("EXCEPTION: open()" + str(e))          
             finally:
-                # print(self.device.DisplayName())
                 if self.device is None:
                     return False
                 self.remote_node_map = self.device.RemoteDevice().NodeMaps()[0]
@@ -501,14 +492,6 @@ class IDS(CameraABC):
                 #set the pixelformat for used ids cameras to  monochrome 12 bit, default is monochrome 8 bit
                 self.remote_node_map.FindNode("PixelFormat").SetCurrentEntry("Mono12")
                 self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("SingleFrame")
-
-                #LongExposure according to ids_peak manual
-                # self.remote_node_map.FindNode("UserSetSelector").SetCurrentEntry("LongExposure")
-                # self.remote_node_map.FindNode("UserSetLoad").Execute()
-
-
-
-
                 self.set_roi()
                 return True
         else:
@@ -536,7 +519,7 @@ class IDS(CameraABC):
 
     def get_binning(self): #TODO: Reactivate binning function and implement set_binning: File "/home/aop2diplom/viperleed-git/src/viperleed/gui/measure/camera/abc.py", line 1073, in set_binning raise NotImplementedError(NotImplementedError: IDS natively supports binning, but self.set_binning() was not overridden.
 
-        """IDS cameras support binning, even in vertical AND horizontal direction.
+        """IDS cameras support binning, even in vertical AND horizontal direction. For IDS cameras the default binning factor is 1.
         
         Returns
         ----
@@ -546,17 +529,7 @@ class IDS(CameraABC):
                 binning_factor = max(binning_vertical, binning_horizontal) 
                 Tested IDS Cameras only support a binning_factor of max. 2
         """ 
-        print("get binning startet")
-        if self.remote_node_map is None:
-            return None
-        # binning_vertical = self.remote_node_map.FindNode("BinningVertical").Value()
-        # binning_horizontal = self.remote_node_map.FindNode("BinningHorizontal").Value()
-        
-        # if binning_vertical == binning_horizontal:
-        #     return binning_vertical
-        # else:
-        #     self.remote_node_map.FindNode("BinningVertical").SetValue(binning_horizontal)
-        #     return binning_horizontal
+        return None
 
     def get_exposure(self):
         """Return the exposure time in milliseconds set in the camera."""
@@ -569,21 +542,16 @@ class IDS(CameraABC):
         if self.remote_node_map is None:
             raise RuntimeError("set_exposure, remotenodemap none") 
         else:
-            max_exposure = self.remote_node_map.FindNode("ExposureTime").Maximum()
             new_frame_rate = 1/ ( self.exposure / 1000)
             max_frame_rate = self.remote_node_map.FindNode("AcquisitionFrameRate").Maximum()
             min_frame_rate = self.remote_node_map.FindNode("AcquisitionFrameRate").Minimum()
             if min_frame_rate <= new_frame_rate:
-                print(f"min_frame_rate <= new_frame_rate: {min_frame_rate <= new_frame_rate}")
                 self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(min_frame_rate)
             elif new_frame_rate <= max_frame_rate:
-                print(f"new_frame_rate <= max_frame_rate: {new_frame_rate <= max_frame_rate}")
                 self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(max_frame_rate)
             else:
                 print(f"new_frame_rate: {new_frame_rate}")
                 self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(new_frame_rate)
-
-
             self.remote_node_map.FindNode("ExposureTime").SetValue(self.exposure * 1000)
 
     def get_exposure_limits(self): 
@@ -797,7 +765,6 @@ class IDS(CameraABC):
         -------
         None
         """
-        print("set_callback startet")
         return
 
     @qtc.pyqtSlot()
@@ -885,13 +852,8 @@ class IDS(CameraABC):
         -----
         error_occurred(CameraErrors.UNSUPPORTED_OPERATION)
         """
-        print("trigger_now startet")
-
-        print(self.remote_node_map.FindNode("ExposureTime").Value())
-        
         if not super().trigger_now():
             return False
-
        
         #Lock writable nodes, which could influence the payload size during acquisition.
         self.remote_node_map.FindNode("TLParamsLocked").SetValue(1)
@@ -903,9 +865,7 @@ class IDS(CameraABC):
         self.remote_node_map.FindNode("TriggerSoftware").Execute()
         self.remote_node_map.FindNode("TriggerSoftware").WaitUntilDone()
 
-        print(self.datastream.NumBuffersQueued())
         buffer = self.datastream.WaitForFinishedBuffer(ids_peak.Timeout.INFINITE_TIMEOUT)
-        print(self.datastream.NumBuffersQueued())
 
         extracted_image = self._process_ids_mono12_buffer(buffer) 
         self.frame_ready.emit(extracted_image.copy())
