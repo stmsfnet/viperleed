@@ -261,7 +261,7 @@ class IDS(CameraABC):
             frames, i.e., only one 'trigger_now()' call is necessary to
             deliver all the frames needed.
         """
-        return self._supports_trigger_burst
+        return False #self._supports_trigger_burst
 
 
     def check_loaded_settings(self):
@@ -477,14 +477,14 @@ class IDS(CameraABC):
                 self.remote_node_map = self.device.RemoteDevice().NodeMaps()[0]
                 self.datastream = self.device.DataStreams()[0].OpenDataStream()
 
-                if not self._supports_trigger_burst:                               
-                    try:
-                        self.remote_node_map.TryFindNode("AcquisitionMode").SetCurrentEntry("MultiFrame")
+                # if not self._supports_trigger_burst:                               
+                #     try:
+                #         self.remote_node_map.TryFindNode("AcquisitionMode").SetCurrentEntry("MultiFrame")
 
-                        self._supports_trigger_burst = True
-                    except Exception as e:
-                        print("EXCEPTION: " + str(e))
-                        self._supports_trigger_burst = False
+                #         self._supports_trigger_burst = True
+                #     except Exception as e:
+                #         print("EXCEPTION: " + str(e))
+                #         self._supports_trigger_burst = False
                 
                 self.set_roi(no_roi=True)
                 #set the pixelformat for used ids cameras to  monochrome 12 bit, default is monochrome 8 bit
