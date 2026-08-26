@@ -540,7 +540,7 @@ class IDS(CameraABC):
         if self.remote_node_map is None:
             raise RuntimeError("set_exposure, remotenodemap none") 
         else:
-            new_frame_rate = 1/ ( (self.exposure*1.01) / 1000)
+            new_frame_rate = 1/ ( (self.exposure*1.02) / 1000)
             max_frame_rate = self.remote_node_map.FindNode("AcquisitionFrameRate").Maximum()
             min_frame_rate = self.remote_node_map.FindNode("AcquisitionFrameRate").Minimum()
 
