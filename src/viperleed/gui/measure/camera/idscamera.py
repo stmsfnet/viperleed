@@ -101,9 +101,7 @@ class IDS(CameraABC):
             Extra time in milliseconds required by the camera
             to complete a triggering cycle.
         """
-        #https://www.1stvision.com/cameras/IDS/IDS-manuals/en/operate-software-trigger.html 
-        frame_rate = self.get_frame_rate()
-        return (1000 / frame_rate) if frame_rate > 0 else 0
+        return 30
 
     @property
     def image_info(self):
@@ -542,16 +540,18 @@ class IDS(CameraABC):
         if self.remote_node_map is None:
             raise RuntimeError("set_exposure, remotenodemap none") 
         else:
-            new_frame_rate = 1/ ( self.exposure / 1000)
+            new_frame_rate = 1/ ( (self.exposure*1.01) / 1000)
             max_frame_rate = self.remote_node_map.FindNode("AcquisitionFrameRate").Maximum()
             min_frame_rate = self.remote_node_map.FindNode("AcquisitionFrameRate").Minimum()
-            if min_frame_rate <= new_frame_rate:
+
+            if min_frame_rate > new_frame_rate:
                 self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(min_frame_rate)
-            elif new_frame_rate <= max_frame_rate:
-                self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(max_frame_rate)
+            elif new_frame_rate > max_frame_rate:
+                self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(max_frame_rate*0.999)
             else:
-                print(f"new_frame_rate: {new_frame_rate}")
                 self.remote_node_map.FindNode("AcquisitionFrameRate").SetValue(new_frame_rate)
+                
+            self.remote_node_map.FindNode("AcquisitionFrameRate").Value()
             self.remote_node_map.FindNode("ExposureTime").SetValue(self.exposure * 1000)
 
     def get_exposure_limits(self): 
