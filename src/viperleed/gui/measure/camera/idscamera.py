@@ -203,12 +203,11 @@ class IDS(CameraABC):
             processing images, False otherwise.
         """
         if self.datastream is None:
-            return False
+            running = False
         else:
-            return True
-        #SensorState according to: https://www.1stvision.com/cameras/IDS/IDS-manuals/en/sensor-state.html  -> only available uEye+: GV and U3 cameras     
-        #sensor_state = self.remote_node_map.FindNode("SensorState").CurrentEntry().SymbolicValue()
-               
+            running = True
+        return running
+
     @property
     def black_level(self):
         """Return the black-level setting of the camera.
@@ -294,10 +293,9 @@ class IDS(CameraABC):
     def close(self):
         """Closes the camera. 'For IDS cameras the reference to the object must be destroy, 
         by either going out-of-scope or by explicitly overwriting the variable.' """
-        
+        print("close(self) starts")
 
         if self.device is not None or self.datastream is not None or self.remote_node_map is not None:
-            self.stop()
             self.datastream = None
             self.remote_node_map = None
             self.device = None
@@ -473,7 +471,7 @@ class IDS(CameraABC):
                 print("EXCEPTION: open()" + str(e))          
             finally:
                 if self.device is None:
-                    return False
+                    print("self.device is None")
                 self.remote_node_map = self.device.RemoteDevice().NodeMaps()[0]
                 self.datastream = self.device.DataStreams()[0].OpenDataStream()
 
@@ -489,9 +487,8 @@ class IDS(CameraABC):
                 self.set_roi(no_roi=True)
                 #set the pixelformat for used ids cameras to  monochrome 12 bit, default is monochrome 8 bit
                 self.remote_node_map.FindNode("PixelFormat").SetCurrentEntry("Mono12")
-                self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("SingleFrame")
                 self.set_roi()
-                return True
+            return True
         else:
             return True
 
@@ -777,6 +774,7 @@ class IDS(CameraABC):
         """        
         super().start()
         print(f"self.open is {self.open()}")
+        print(self.get_mode())
         if self.mode == "triggered":            
             self.revoke_buffer()
             self.alloc_buffer()            
@@ -808,10 +806,10 @@ class IDS(CameraABC):
     @qtc.pyqtSlot()
     def stop(self):
         """Stop the camera."""
+        print("stop() starts")
         if not super().stop():
             # No need to stop, or cannot stop yet
             return False
-
         try:
             if self._live_worker is not None:
                 self._live_worker.stop()
@@ -822,19 +820,20 @@ class IDS(CameraABC):
                 self._live_worker = None
         except Exception as e:
             print("EXCEPTION: stop thread - " + str(e))
-        
         #stop acquisition on camera
         if self.remote_node_map is None:
             return False
-        
+
         self.remote_node_map.FindNode("AcquisitionStop").Execute()
 
+        #stop and flush the datastream
         if self.datastream.IsGrabbing():
-            self.datastream.StopAcquisition()
-
+            self.datastream.StopAcquisition(ids_peak.AcquisitionStopMode_Kill)
         #revoke all buffers ( Discard all buffers from the acquisition engine, because they remain in the announced buffer pool.)
         self.revoke_buffer()
-
+        self.remote_node_map = None
+        self.datastream = None
+        self.is_running
         self.stopped.emit()
         return True
 
