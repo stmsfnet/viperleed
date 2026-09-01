@@ -56,13 +56,12 @@ class IDS(CameraABC):
         # Needed for extending
         *CameraABC._mandatory_settings,
         ('camera_settings', 'black_level'),
-        )  
+        )
+      
     def __init__(self, *args, settings=None, parent=None, **kwargs):
         """Initialize instance."""
         self.hardware_supported_features.extend(['roi', 'black_level'])
-        #initialize the ids_peak library
-        ids_peak.Library.Initialize()            
-    
+        ids_peak.Library.Initialize()
         self.device = None
         self.datastream = None
         self.remote_node_map = None
@@ -73,11 +72,8 @@ class IDS(CameraABC):
         self._live_thread = None
         self._live_worker = None
         self._live_thread = qtc.QThread()     
-        
-        #self.device_manager = ids_peak.DeviceManager.Instance()
         super().__init__(ids_peak,*args,settings=settings, parent=parent, **kwargs)
 
-        
     @property
     def exceptions(self):
         """Return a tuple of camera exceptions.
@@ -116,8 +112,6 @@ class IDS(CameraABC):
         n_colors : int
             Number of color channels
         """
-        #If you change the image size, you must stop image acquisition and recreate the buffers, see Starting and stopping image acquisition and Preparing image acquisition: create buffer.
-        #at https://www.1stvision.com/cameras/IDS/IDS-manuals/en/height.html 
         if self.remote_node_map is None:
             raise RuntimeError("remote_node_map is None")
             
@@ -153,16 +147,11 @@ class IDS(CameraABC):
         pixel_max : int
             Maximum intensity for a pixel
         """
-        #IDS Cameras can generate a test image according to https://www.1stvision.com/cameras/IDS/IDS-manuals/en/test-pattern.html
-        #Black: The sensor generates a test image with the darkest possible image.
-        #White: The sensor generates a test image with the brightest possible image.
         if self.remote_node_map is None:
             return 0, 65520
         else:
             pixel_format = self.remote_node_map.FindNode("PixelFormat").CurrentEntry().SymbolicValue()
 
-            #this if segment is only for monochromatic ids cameras and could be densed down
-            # if this way of calculating the pixel_min and pixel_max can't be checked for Mono12p and Mono10p ()
             if "12" in pixel_format:  #Mono12
                 n_bytes = 2  
                 dyn_range = 12
@@ -247,8 +236,6 @@ class IDS(CameraABC):
         self.__black_level = black_level
         return black_level
 
-
-
     @property
     def supports_trigger_burst(self):
         """Return whether the camera allows triggering multiple frames.
@@ -260,7 +247,7 @@ class IDS(CameraABC):
             frames, i.e., only one 'trigger_now()' call is necessary to
             deliver all the frames needed.
         """
-        return False #self._supports_trigger_burst
+        return False
 
 
     def check_loaded_settings(self):
@@ -289,17 +276,11 @@ class IDS(CameraABC):
 
         return super().check_loaded_settings()
 
-
     def close(self):
         """Closes the camera. 'For IDS cameras the reference to the object must be destroy, 
         by either going out-of-scope or by explicitly overwriting the variable.' """
-        print("close(self) starts")
-
-        if self.device is not None or self.datastream is not None or self.remote_node_map is not None:
-            self.datastream = None
-            self.remote_node_map = None
-            self.device = None
-
+        self.stop()
+        self.device = None
         ids_peak.Library.Close()
 
     @classmethod
@@ -386,7 +367,6 @@ class IDS(CameraABC):
                                   fallback=None)
         return cls.__name__ == camera_class
 
-
     def get_settings_handler(self):
         """Return a SettingsHandler object for displaying settings.
 
@@ -440,10 +420,10 @@ class IDS(CameraABC):
             For each item, only .unique_name and .has_hardware_interface
             are set, i.e., there is no .more information.
         """
+        present = True
         ids_peak.Library.Initialize()
         self.device_manager = ids_peak.DeviceManager.Instance()
-        self.device_manager.Update()
-        present = True
+        self.device_manager.Update()        
         return  [SettingsInfo(name.DisplayName(),   present) for name in self.device_manager.Devices()]
     
     def open(self): 
@@ -457,40 +437,28 @@ class IDS(CameraABC):
         successful : bool
             True if the device was opened successfully.                     
         """
-
         ids_peak.Library.Initialize()
         self.device_manager = ids_peak.DeviceManager.Instance()
         self.device_manager.Update()
-
-        if self.device is None:
-            try:
-                for i,name in enumerate(self.device_manager.Devices()):
-                    if name.DisplayName() == self.name:
-                        self.device = self.device_manager.Devices()[i].OpenDevice(ids_peak.DeviceAccessType_Control)
-            except Exception as e:
-                print("EXCEPTION: open()" + str(e))          
-            finally:
-                if self.device is None:
-                    print("self.device is None")
-                self.remote_node_map = self.device.RemoteDevice().NodeMaps()[0]
-                self.datastream = self.device.DataStreams()[0].OpenDataStream()
-
-                # if not self._supports_trigger_burst:                               
-                #     try:
-                #         self.remote_node_map.TryFindNode("AcquisitionMode").SetCurrentEntry("MultiFrame")
-
-                #         self._supports_trigger_burst = True
-                #     except Exception as e:
-                #         print("EXCEPTION: " + str(e))
-                #         self._supports_trigger_burst = False
-                
-                self.set_roi(no_roi=True)
-                #set the pixelformat for used ids cameras to  monochrome 12 bit, default is monochrome 8 bit
-                self.remote_node_map.FindNode("PixelFormat").SetCurrentEntry("Mono12")
-                self.set_roi()
+        if self.device is not None:
             return True
-        else:
-            return True
+        
+        try:
+            for i,name in enumerate(self.device_manager.Devices()):
+                if name.DisplayName() == self.name:
+                    self.device = self.device_manager.Devices()[i].OpenDevice(ids_peak.DeviceAccessType_Control)
+        except Exception as e:
+            print("EXCEPTION: open()" + str(e))          
+        finally:
+            if self.device is None:
+                print("self.device is None")
+            self.remote_node_map = self.device.RemoteDevice().NodeMaps()[0]
+            self.datastream = self.device.DataStreams()[0].OpenDataStream()
+            self.set_roi(no_roi=True)
+            #set the pixelformat for used ids cameras to  monochrome 12 bit, default is monochrome 8 bit
+            self.remote_node_map.FindNode("PixelFormat").SetCurrentEntry("Mono12")
+            self.set_roi()
+        return True
 
     @qtc.pyqtSlot()
     def get_black_level(self):
@@ -505,15 +473,12 @@ class IDS(CameraABC):
             return
         self.remote_node_map.FindNode("BlackLevel").SetValue(_level)
 
-
     def get_black_level_limits(self):
         """Return minimum and maximum values for the black level."""
         _black_level_node = self.remote_node_map.FindNode("BlackLevel")
         return _black_level_node.Minimum(), _black_level_node.Maximum()
 
-
-    def get_binning(self): #TODO: Reactivate binning function and implement set_binning: File "/home/aop2diplom/viperleed-git/src/viperleed/gui/measure/camera/abc.py", line 1073, in set_binning raise NotImplementedError(NotImplementedError: IDS natively supports binning, but self.set_binning() was not overridden.
-
+    def get_binning(self):
         """IDS cameras support binning, even in vertical AND horizontal direction. For IDS cameras the default binning factor is 1.
         
         Returns
@@ -528,12 +493,10 @@ class IDS(CameraABC):
 
     def get_exposure(self):
         """Return the exposure time in milliseconds set in the camera."""
-        #https://www.1stvision.com/cameras/IDS/IDS-manuals/en/exposure-time.html
         return self.remote_node_map.FindNode("ExposureTime").Value() / 1000
 
     def set_exposure(self):
         """Set the exposure time."""
-        #https://www.1stvision.com/cameras/IDS/IDS-manuals/en/exposure-time.html
         if self.remote_node_map is None:
             raise RuntimeError("set_exposure, remotenodemap none") 
         else:
@@ -599,8 +562,6 @@ class IDS(CameraABC):
     
     def set_gain(self):
         """Set the gain of the camera in dB."""
-
-        #raise RuntimeError(f"{self.remote_node_map.FindNode("Gain").Value()}, {self.gain}")
         if self.remote_node_map is not None:
             self.remote_node_map.FindNode("Gain").SetValue(self.gain)
 
@@ -619,7 +580,6 @@ class IDS(CameraABC):
             gain_max = self.remote_node_map.FindNode("Gain").Maximum()
             return gain_min , gain_max
     
-
     def get_mode(self):
         """Return the mode set in the camera.
 
@@ -635,7 +595,6 @@ class IDS(CameraABC):
         Another possible AcquisitionMode IDS camera can use is MultiFrame (tested cameras can't support this mode)
         MultiFrame: Number of images specified by AcquisitionFrameCount is captured. only supported by uEye+ cameras (GV and U3 models)
         """
-        #https://www.1stvision.com/cameras/IDS/IDS-manuals/en/acquisition-mode.html
         return 'triggered' if self.remote_node_map.FindNode("AcquisitionMode").CurrentEntry().SymbolicValue() != "Continuous" else "live"
 
     def set_mode(self):
@@ -645,7 +604,6 @@ class IDS(CameraABC):
             
         else:
             self.remote_node_map.FindNode("TriggerMode").SetCurrentEntry("Off")
-
             self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("Continuous") 
 
     def get_n_frames(self):
@@ -669,12 +627,10 @@ class IDS(CameraABC):
         if self.remote_node_map is None:
             return (0,0,1936,1216)
         else:
-            #https://www.1stvision.com/cameras/IDS/IDS-manuals/en/program-set-roi.html
             roi_x = self.remote_node_map.FindNode("OffsetX").Value()
             roi_y = self.remote_node_map.FindNode("OffsetY").Value()
             roi_width = self.remote_node_map.FindNode("Width").Value()
             roi_height = self.remote_node_map.FindNode("Height").Value()
-
             return roi_x, roi_y, roi_width, roi_height
 
     def set_roi(self,no_roi =False):
@@ -723,7 +679,6 @@ class IDS(CameraABC):
         if self.remote_node_map is None:
             return (0,0), (1936,1216), (2,2),(2,2)
         else:
-            #https://www.1stvision.com/cameras/IDS/IDS-manuals/en/program-set-roi.html
             roi_min = (self.remote_node_map.FindNode("Width").Minimum(), self.remote_node_map.FindNode("Height").Minimum())
             roi_max = (self.remote_node_map.FindNode("Width").Maximum(), self.remote_node_map.FindNode("Height").Maximum())
 
@@ -731,7 +686,6 @@ class IDS(CameraABC):
             roi_offset_increments = (self.remote_node_map.FindNode("OffsetX").Increment(), self.remote_node_map.FindNode("OffsetY").Increment())
 
             return roi_min, roi_max, roi_increments, roi_offset_increments
-
 
     def reset(self):
         """Reset the camera to FACTORY default settings."""
@@ -773,8 +727,6 @@ class IDS(CameraABC):
         None.
         """        
         super().start()
-        print(f"self.open is {self.open()}")
-        print(self.get_mode())
         if self.mode == "triggered":            
             self.revoke_buffer()
             self.alloc_buffer()            
@@ -788,6 +740,7 @@ class IDS(CameraABC):
 
             self.remote_node_map.FindNode("TriggerMode").SetCurrentEntry("Off")
             self.remote_node_map.FindNode("AcquisitionMode").SetCurrentEntry("Continuous")
+            #Lock writable nodes, which could influence the payload size during acquisition.
             self.remote_node_map.FindNode("TLParamsLocked").SetValue(1)
 
             self.datastream.StartAcquisition()
@@ -799,14 +752,12 @@ class IDS(CameraABC):
 
             self._live_thread.started.connect(self._live_worker.run)
             self._live_worker.frame_ready.connect(self.frame_ready.emit)
-            self._live_thread.start()                
-        
+            self._live_thread.start()                        
         self.started.emit()
 
     @qtc.pyqtSlot()
     def stop(self):
         """Stop the camera."""
-        print("stop() starts")
         if not super().stop():
             # No need to stop, or cannot stop yet
             return False
@@ -821,16 +772,21 @@ class IDS(CameraABC):
         except Exception as e:
             print("EXCEPTION: stop thread - " + str(e))
         #stop acquisition on camera
-        if self.remote_node_map is None:
-            return False
+        if self.remote_node_map is not None:
+            try:
+                self.remote_node_map.FindNode("AcquisitionStop").Execute()
+            except Exception as e:
+                print("EXCEPTION: AcquisitionStop - " + str(e))
+        if self.datastream is not None:
+            try:
+                #stop and flush the datastream
+                if self.datastream.IsGrabbing():
+                    self.datastream.StopAcquisition(ids_peak.AcquisitionStopMode_Kill)
+                self.revoke_buffer()
+            except Exception as e:
+                #revoke all buffers ( Discard all buffers from the acquisition engine, because they remain in the announced buffer pool.)
+                print("EXCEPTION: - " + str(e))
 
-        self.remote_node_map.FindNode("AcquisitionStop").Execute()
-
-        #stop and flush the datastream
-        if self.datastream.IsGrabbing():
-            self.datastream.StopAcquisition(ids_peak.AcquisitionStopMode_Kill)
-        #revoke all buffers ( Discard all buffers from the acquisition engine, because they remain in the announced buffer pool.)
-        self.revoke_buffer()
         self.remote_node_map = None
         self.datastream = None
         self.is_running
@@ -839,7 +795,6 @@ class IDS(CameraABC):
 
     @qtc.pyqtSlot()
     def trigger_now(self):
-
         """Start acquiring one (or more) frames now.
 
         Returns
@@ -857,8 +812,7 @@ class IDS(CameraABC):
         #Lock writable nodes, which could influence the payload size during acquisition.
         self.remote_node_map.FindNode("TLParamsLocked").SetValue(1)
         self.remote_node_map.FindNode("AcquisitionStart").Execute()
-        #Check if the command has finished before you continue (optional)
-        # self.remote_node_map.FindNode("AcquisitionStart").WaitUntilDone()
+        self.remote_node_map.FindNode("AcquisitionStart").WaitUntilDone()
 
         #image trigger
         self.remote_node_map.FindNode("TriggerSoftware").Execute()
@@ -868,12 +822,14 @@ class IDS(CameraABC):
 
         extracted_image = self._process_ids_mono12_buffer(buffer) 
         self.frame_ready.emit(extracted_image.copy())
-        
+
+       #used buffer put back into queue 
         self.datastream.QueueBuffer(buffer)
 
         self.remote_node_map.FindNode("AcquisitionStop").Execute()
         self.remote_node_map.FindNode("AcquisitionStop").WaitUntilDone()
 
+        #Unlock writable nodes, which could influence the payload size during acquisition.
         self.remote_node_map.FindNode("TLParamsLocked").SetValue(0)
         return True
 
@@ -895,14 +851,12 @@ class IDS(CameraABC):
 
         raw_data = np.frombuffer(buffer_bytes,dtype='<u2')
         image_2d = raw_data.reshape((height, width))
-
         return image_2d <<4
 
     def init_software_trigger(self):
         """Initialize the software Trigger.
         Sets the TriggerSelector to ExposureStart, the TriggerMode to On and the TriggerSource to Software.
-        """
-        
+        """    
         self.remote_node_map.FindNode("TriggerSelector").SetCurrentEntry("ExposureStart")
         self.remote_node_map.FindNode("TriggerMode").SetCurrentEntry("On")
         self.remote_node_map.FindNode("TriggerSource").SetCurrentEntry("Software")
