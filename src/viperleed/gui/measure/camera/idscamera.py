@@ -422,6 +422,7 @@ class IDS(CameraABC):
         """
         present = True
         ids_peak.Library.Initialize()
+        
         self.device_manager = ids_peak.DeviceManager.Instance()
         self.device_manager.Update()        
         return  [SettingsInfo(name.DisplayName(),   present) for name in self.device_manager.Devices()]
